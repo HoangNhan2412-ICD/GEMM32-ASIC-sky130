@@ -1,0 +1,15 @@
+# sinh ra khi chạy flow
+__pycache__/
+openlane/logs/
+openlane/state/
+openlane/LOG.md.bak
+openlane/designs/gemm_core/floorplan.txt
+openlane/designs/*/overrides.tcl
+openlane/designs/gemm_core/resume_params.tcl
+openlane/designs/gemm_core/full_params.tcl
+sim/build_*/
+sim/core_sim_quick_*/
+# floorplan của core do gen_core_files.py sinh lại mỗi lần chạy
+openlane/designs/gemm_core/sizes.tcl
+openlane/designs/gemm_core/macro.cfg
+openlane/designs/gemm_core/pin_order.cfg

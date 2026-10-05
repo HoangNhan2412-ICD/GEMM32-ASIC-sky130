@@ -197,6 +197,7 @@ if { $GEMM_MODE eq "probe" } {
     set ::env(GEMM_PROBE_ITERS) $GEMM_PROBE_ITERS
     set ::env(GEMM_PROBE_RPT) $::env(routing_reports)/grt_probe_congestion.rpt
     set ::env(GEMM_PROBE_ODB) $::env(routing_tmpfiles)/grt_probe.odb
+    set ::env(GEMM_PROBE_GUIDE) $::env(routing_tmpfiles)/grt_probe.guide
     puts_info "resume: global route probe, $GEMM_PROBE_ITERS congestion iterations (log: [relpath . $log])"
     run_openroad_script $here/grt_probe.tcl -indexed_log $log
     puts_info "GEMM_PROBE_DONE"

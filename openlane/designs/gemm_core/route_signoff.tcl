@@ -189,6 +189,51 @@ proc gemm_keep_round {dir name rpt} {
 
 # OpenLane 1.0.2 run_routing (tcl_commands/routing.tcl), step for step, plus the
 # seed loop (gemm_drt_seeds) and the antenna ECO rounds above.
+# Global route that leaves a net THROUGH a macro (core_v7r: net3191 on met2
+# straight across an SRAM - met1-met4 blocked by the SRAM, met5 by GRT_OBS) is
+# a short with every detailed-router seed. macro_cross.py reads the guide and
+# stops the run here, before hours of DRT, unless GEMM_MACRO_CROSS_STOP is 0.
+# GEMM_MACRO_CROSS_DEPTH: how deep (um) a guide may go before it counts.
+proc gemm_macro_cross {round} {
+    set rpt $::env(routing_reports)/macro_cross_round$round.rpt
+    set cmd [list python3 $::env(DESIGN_DIR)/macro_cross.py \
+        --guide $::env(CURRENT_GUIDE) --def $::env(CURRENT_DEF) --lef $::env(MERGED_LEF) \
+        --grt-obs [expr {[info exists ::env(GRT_OBS)] ? $::env(GRT_OBS) : ""}] \
+        --stop-depth [expr {[info exists ::env(GEMM_MACRO_CROSS_DEPTH)] ? $::env(GEMM_MACRO_CROSS_DEPTH) : 50}] \
+        --report $rpt]
+    set rc 0
+    if { [catch { exec {*}$cmd } out opts] } {
+        set code [lindex [dict get $opts -errorcode] 0]
+        if { $code eq "CHILDSTATUS" } {
+            set rc [lindex [dict get $opts -errorcode] 2]
+        } else {
+            puts_warn "gemm: macro_cross.py did not run ($out) - no macro-crossing check"
+            return
+        }
+    }
+    catch { file copy -force $rpt $::env(routing_reports)/macro_cross.rpt }
+    # the summary lines, and every net that goes through a macro
+    set deep 0
+    foreach line [split $out "\n"] {
+        if { [string match "  nets THROUGH*" $line] } { set deep 1; puts_info "macro_cross: [string trim $line]"; continue }
+        if { [string match "  nets with a guide*" $line] } { set deep 0; puts_info "macro_cross: [string trim $line]"; continue }
+        if { [string match "RESULT:*" $line] } { puts_info "macro_cross: $line"; continue }
+        if { $deep && [regexp {^    (\S+) +(\S+) +\d+ guide rect\(s\), up to ([\d.]+) um deep in (\S+)} $line -> n l d m] } {
+            puts_err "gemm: global route left $n on $l through $m ($d um deep)"
+        }
+    }
+    if { $rc == 3 } {
+        set stop [expr {[info exists ::env(GEMM_MACRO_CROSS_STOP)] ? $::env(GEMM_MACRO_CROSS_STOP) : 1}]
+        if { $stop } {
+            error "global route left net(s) through a macro (see [relpath . $rpt]) - stopping before detailed routing;\
+                   GEMM_MACRO_CROSS_STOP=0 routes on anyway"
+        }
+        puts_warn "gemm: GEMM_MACRO_CROSS_STOP=0 - detailed routing anyway"
+    } elseif { $rc != 0 } {
+        puts_warn "gemm: macro_cross.py exit $rc - no macro-crossing check (see [relpath . $rpt])"
+    }
+}
+
 proc gemm_routing {} {
     run_resizer_design_routing
     run_resizer_timing_routing
@@ -237,6 +282,7 @@ proc gemm_routing {} {
             }
         }
         global_routing
+        gemm_macro_cross $round
         if { $::env(RUN_FILL_INSERTION) } { ins_fill_cells }
         gemm_drt_seeds
         set drt $::env(GEMM_DRT_LEFT)
@@ -290,6 +336,40 @@ proc gemm_routing {} {
     set ::env(timer_routed) [clock seconds]
 }
 
+# Magic DRC with the full layout of the standard cells.
+# OpenLane 1.0.2 (run_magic_drc) always sets MAGTYPE maglef. With
+# MAGIC_DRC_USE_GDS 0, which this core needs (see config.tcl), Magic then reads
+# the standard cells as abstracts: the nwell of their VPB pin is there, the N+
+# tap of the tap cells is not, so every nwell of the core is reported as
+# nwell.4 (core_v6r: 25538 of 25595 boxes, all in standard-cell rows, tap cells
+# present in every one). Same step as run_magic_drc, only with MAGTYPE mag:
+# standard cells full (as in the GDS stream-out), macros still the abstracts
+# from EXTRA_LEFS (each was DRC-checked in its own run).
+proc gemm_magic_drc {} {
+    increment_index
+    TIMER::timer_start
+    set log [index_file $::env(signoff_logs)/drc.log]
+    puts_info "Running Magic DRC, full standard-cell views (log: [relpath . $log])..."
+    set ::env(drc_prefix) $::env(signoff_reports)/drc
+    set ::env(MAGTYPE) mag
+    run_magic_script $::env(SCRIPTS_DIR)/magic/drc.tcl -indexed_log $log
+    puts_info "Converting Magic DRC database to various tool-readable formats..."
+    try_exec python3 $::env(SCRIPTS_DIR)/drc_rosetta.py magic to_tcl \
+        -o $::env(drc_prefix).tcl $::env(drc_prefix).rpt
+    try_exec python3 $::env(SCRIPTS_DIR)/drc_rosetta.py magic to_tr \
+        -o $::env(drc_prefix).tr $::env(drc_prefix).rpt
+    try_exec python3 $::env(SCRIPTS_DIR)/drc_rosetta.py tr to_klayout \
+        -o $::env(drc_prefix).klayout.xml --design-name $::env(DESIGN_NAME) $::env(drc_prefix).tr
+    try_exec python3 $::env(SCRIPTS_DIR)/drc_rosetta.py magic to_rdb \
+        -o $::env(drc_prefix).rdb $::env(drc_prefix).rpt
+    file copy -force $::env(MAGIC_MAGICRC) $::env(signoff_results)/.magicrc
+    TIMER::timer_stop
+    exec echo "[TIMER::get_runtime]" | python3 $::env(SCRIPTS_DIR)/write_runtime.py "drc - magic"
+    if { [info exists ::env(QUIT_ON_MAGIC_DRC)] && $::env(QUIT_ON_MAGIC_DRC) } {
+        quit_on_magic_drc -log $::env(drc_prefix).tr
+    }
+}
+
 if { [catch {
     gemm_routing
     if { $::env(RUN_SPEF_EXTRACTION) } { run_parasitics_sta }
@@ -303,9 +383,19 @@ if { [catch {
     if { $::env(RUN_LVS) && $::env(GEMM_DRT_LEFT) != 0 } {
         puts_warn "gemm: skipping LVS - detailed routing left $::env(GEMM_DRT_LEFT) violation(s)"
     } elseif { $::env(RUN_LVS) } { run_magic_spice_export; run_lvs }
-    if { $::env(RUN_MAGIC_DRC) } { run_magic_drc }
-    if { $::env(RUN_KLAYOUT_DRC) } { soft_step "KLayout DRC" { run_klayout_drc } }
+    # antenna before Magic DRC, the longest and largest step here (core_v6r:
+    # 43 min with abstract cells, about 13 GB): if Magic dies, the rest of the
+    # signoff is already there and Magic_violations stays -1, which
+    # check_openlane_run.py reports as MISSING (FAIL), never as a pass
     run_antenna_check
+    if { $::env(RUN_MAGIC_DRC) } {
+        set ::env(EXIT_ON_ERROR) 0
+        if { [catch { gemm_magic_drc } e] } {
+            puts_err "gemm: Magic DRC did not finish ($e) - signoff incomplete"
+        }
+        set ::env(EXIT_ON_ERROR) 1
+    }
+    if { $::env(RUN_KLAYOUT_DRC) } { soft_step "KLayout DRC" { run_klayout_drc } }
     if { $::env(RUN_CVC) } { soft_step "CVC" { run_erc } }
 } err] } {
     puts_err "gemm: $err"

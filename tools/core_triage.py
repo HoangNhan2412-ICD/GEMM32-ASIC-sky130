@@ -15,6 +15,8 @@ Reads only the run directory (no OpenLane needed):
       DPL-...   detailed placement ran after it
   * crash signatures (glibc heap/stack checks, uncaught C++ exception,
     assertion, out of memory)
+  * disk full ("No space left on device", ODB-0172 cannot open a file for
+    writing) in openlane.log or the newest step logs: signal=disk
 
 Last line is machine-readable for run_flow.sh:
   TRIAGE stage=<grt-initial|grt-overflow|grt-congestion|rsz|dpl|after-dpl|finished|other|none> signal=<...>
@@ -94,6 +96,16 @@ def main():
 
     logs = [p for p in glob.glob(os.path.join(run, "logs", "**", "*.log"), recursive=True)
             if os.path.getsize(p) > 0]
+    # disk full (core_v7r: tmp/routing/22-fill.def could not be written, ODB-0172):
+    # looked for in openlane.log and the newest step logs only
+    newest = sorted(logs, key=os.path.getmtime)[-5:]
+    for p in ([ol] if os.path.exists(ol) else []) + newest:
+        with open(p, errors="ignore") as f:
+            hit = next((ln.strip() for ln in f if "No space left on device" in ln or "ODB-0172" in ln), None)
+        if hit:
+            signal = "disk"
+            print(f"disk full    : {os.path.relpath(p, run)}: {hit[:150]}")
+            break
     if not logs:
         print("no step logs")
         print(f"TRIAGE stage=none signal={signal}")

@@ -10,6 +10,9 @@
 # env:    ROW=rtl (default) | gl   row macro model: its RTL (fast) or its own
 #                                  gate netlist from row_v1 (slow, complete)
 #         TB_SHAPE="M,K,N"         same as run_system.sh
+#         BUILD=dir                build directory (default sim/build_gls)
+#         EXTRA_V="a.v b.v"        extra Verilog compiled with the testbench
+#                                  (e.g. a module that controls $dumpvars)
 #
 # Models: sky130_fd_sc_hd functional models (-DFUNCTIONAL -DUNIT_DELAY=#1:
 # 1 ns clock-to-Q, zero-delay logic, fine at the 10 ns testbench clock), the
@@ -23,7 +26,7 @@ OL=${OL:-$HOME/OpenLane}
 RUN=${1:-$OL/designs/gemm_core/runs/core_v1}
 REPO=${2:-${REPO:-$KIT/../GEMM_32x32_KV260-main}}
 ROW=${ROW:-rtl}
-BUILD=$KIT/sim/build_gls
+BUILD=${BUILD:-$KIT/sim/build_gls}
 mkdir -p "$BUILD"
 
 pdk_dir() {
@@ -78,7 +81,8 @@ open(sys.argv[2], "w").write("`timescale 1ns / 1ps\n" + s)
 PY
 
 if [ "$ROW" = gl ]; then
-    RN=$OL/designs/gemm_row/runs/row_v1/results/final/verilog/gl/ProcessingElementRow.v
+    # .nl.v (no power ports): the core netlist instantiates the row without them
+    RN=$OL/designs/gemm_row/runs/row_v1/results/final/verilog/gl/ProcessingElementRow.nl.v
     python3 - "$RN" "$BUILD/row_gl.v" <<'PY'
 import re, sys
 s = open(sys.argv[1]).read()
@@ -102,13 +106,25 @@ if [ -n "${TB_SHAPE:-}" ]; then
            -e "s/localparam integer N = 64;/localparam integer N = $TN;/" "$BUILD/tb.sv"
 fi
 
+# GEMM_top copy: the gate netlist of GemmAccelerator has no parameters (fixed at
+# synthesis: shift 10, row count 9, depths from gemm_asic_cfg.vh), so the
+# #(...) override on its instance is dropped
+python3 - "$REPO/rtl/GEMM_top.v" "$BUILD/GEMM_top.v" <<'PY'
+import re, sys
+s = open(sys.argv[1]).read()
+s, n = re.subn(r"\bGemmAccelerator\s*#\s*\((?:[^()]|\([^()]*\))*\)", "GemmAccelerator", s, count=1)
+if n != 1:
+    sys.exit("run_gls.sh: no GemmAccelerator #(...) instance found in GEMM_top.v")
+open(sys.argv[2], "w").write(s)
+PY
+
 EF=(); [ -f "$P/libs.ref/sky130_fd_sc_hd/verilog/sky130_ef_sc_hd.v" ] && EF=("$P/libs.ref/sky130_fd_sc_hd/verilog/sky130_ef_sc_hd.v")
 echo "compiling (PDK models: $SC)"
 iverilog -g2012 -DFUNCTIONAL -DUNIT_DELAY=#1 -DGEMM_DP_RESET=0 "${PWR[@]}" -I "$KIT/rtl_asic" \
     -o "$BUILD/gls.vvp" \
-    "$BUILD/tb.sv" "$REPO/rtl/GEMM_top.v" "$REPO"/axi_ip/*.v \
+    "$BUILD/tb.sv" "$BUILD/GEMM_top.v" "$REPO"/axi_ip/*.v \
     "$BUILD/core_gl.v" "${ROWSRC[@]}" "$BUILD/sram_model.v" \
-    "$SC/primitives.v" "$SC/sky130_fd_sc_hd.v" "${EF[@]}"
+    "$SC/primitives.v" "$SC/sky130_fd_sc_hd.v" "${EF[@]}" ${EXTRA_V:-}
 echo "simulating - gate level, this takes a while"
 ( cd "$BUILD" && vvp -n gls.vvp > gls.log )
 grep -E "OVERALL (PASS|FAIL)" "$BUILD/gls.log" || echo "no OVERALL line - see $BUILD/gls.log"

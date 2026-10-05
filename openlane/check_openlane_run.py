@@ -46,18 +46,28 @@ def hold_slack(run):
 
 
 def sta_paths(run, kind):
-    """(slack, touches_port, start, end) of every path in the signoff STA report"""
+    """(slack, touches_port, start, end) of every path in the signoff STA report.
+    The .rpt files are only written at the very end of the flow; a run that
+    stopped earlier still has the same paths in logs/signoff/*-rcx_sta.log
+    (setup and hold together, told apart by "Path Type: max/min")."""
     fs = sorted(glob.glob(os.path.join(run, "reports", "signoff", f"*rcx_sta.{kind}.rpt")))
-    if not fs:
-        return None
+    from_log = not fs
+    if from_log:
+        fs = sorted(glob.glob(os.path.join(run, "logs", "signoff", "*-rcx_sta.log")), key=os.path.getmtime)
+        if not fs:
+            return None
     out = []
     for blk in re.split(r"\n(?=Startpoint: )", "\n" + open(fs[-1], errors="ignore").read())[1:]:
+        if from_log and not re.search(rf"^Path Type: {kind}\b", blk, re.M):
+            continue
         st = re.search(r"Startpoint: (\S+) \(([^)]*)\)", blk)
         en = re.search(r"Endpoint: (\S+) \(([^)]*)\)", blk)
         sl = re.search(r"(-?\d+\.\d+)\s+slack \((?:VIOLATED|MET)\)", blk)
         if st and en and sl:
             port = "input port" in st.group(2) or "output port" in en.group(2)
             out.append((float(sl.group(1)), port, st.group(1), en.group(1)))
+    if from_log:
+        print(f"  (no rcx_sta.{kind}.rpt - {kind} paths read from {os.path.relpath(fs[-1], run)})")
     return out
 
 

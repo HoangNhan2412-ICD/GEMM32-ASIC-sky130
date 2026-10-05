@@ -12,7 +12,7 @@
 //   left edge   : i_feature_value, i_clk, i_rst_n, i_weight_shift_en,
 //                 i_weight_load
 // Pin j of the top edge sits exactly above pin j of the bottom edge
-// (see orfs/.../io_row.tcl) so stacked rows connect with straight wires.
+// (pin_order.cfg from openlane/gen_openlane_files.py) so stacked rows connect with straight wires.
 //
 // Do NOT override the parameters when instantiating this module; change
 // gemm_asic_cfg.vh instead.

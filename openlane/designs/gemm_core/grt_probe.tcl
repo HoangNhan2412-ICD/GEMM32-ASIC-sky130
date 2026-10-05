@@ -51,6 +51,12 @@ global_route -congestion_iterations $iters -allow_congestion -verbose \
     -congestion_report_file $::env(GEMM_PROBE_RPT)
 puts "GEMM_PROBE: global_route finished"
 
+# the guide, for macro_cross.py (nets the global route left through a macro)
+if { [info exists ::env(GEMM_PROBE_GUIDE)] && $::env(GEMM_PROBE_GUIDE) ne "" } {
+    write_guides $::env(GEMM_PROBE_GUIDE)
+    puts "GEMM_PROBE: wrote $::env(GEMM_PROBE_GUIDE)"
+}
+
 if { [info exists ::env(GEMM_PROBE_ODB)] && $::env(GEMM_PROBE_ODB) ne "" } {
     write_db $::env(GEMM_PROBE_ODB)
     puts "GEMM_PROBE: wrote $::env(GEMM_PROBE_ODB)"

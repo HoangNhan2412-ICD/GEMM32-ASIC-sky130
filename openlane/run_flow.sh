@@ -1,55 +1,34 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# run_flow.sh - the whole GEMM ASIC flow on OpenLane v1 (Docker/Podman),
-# bottom-up, one checked stage at a time.
+# run_flow.sh - GEMM ASIC flow on OpenLane 1.0.2, bottom-up, one checked stage at a time.
 #
-#   openlane/run_flow.sh sim      RTL: original vs ASIC, cycle-exact
-#   openlane/run_flow.sh pe       level 0: one PE (measures the PE area)
-#   openlane/run_flow.sh row      level 1: 32-PE row hardened as a macro
-#   openlane/run_flow.sh array    level 2: FeatureSkew + 32 row macros + OutputDeskew
-#   openlane/run_flow.sh array-check   re-judge the last array run without rerunning
-#   openlane/run_flow.sh core-sim  RTL of the final core with the real OpenRAM models
-#   openlane/run_flow.sh core-pre  level 3 preflight: lint + synthesis + floorplan (~1 h)
-#   openlane/run_flow.sh core      level 3: GemmAccelerator = rows + 80 SRAM macros
-#                                  (run core_v7, floorplan "--layout v3 --b-wide --b-gap-y 200 --strip 1000 --a-gap-x 200";
-#                                  synthesis..CTS then route_signoff.tcl: router seeds, antenna ECO, LVS gate)
-#   openlane/run_flow.sh core-status   where the running/last core run is (step, log, overflow, RAM)
-#   openlane/run_flow.sh core-triage   why did the last core run stop (reads its logs)
-#   openlane/run_flow.sh core-probe    global route only on the post-CTS layout: congestion map
-#   openlane/run_flow.sh core-route    routing + signoff continued from the post-CTS layout
-#                                      of the last core run in a new run <tag>r (no 2.5 h redo)
-#   openlane/run_flow.sh core-precheck antenna check + timing of an existing routed run (~15 min)
-#   openlane/run_flow.sh core-check    re-judge the last core run without rerunning
-#   openlane/run_flow.sh core-gls  testbench on the final gate-level netlist (after core)
-#   openlane/run_flow.sh all      sim -> pe -> row -> array, stops at the first FAIL
-#   openlane/run_flow.sh status   what has passed so far
+#   openlane/run_flow.sh sim        ASIC RTL vs FPGA RTL (original testbench, cycle-exact)
+#   openlane/run_flow.sh pe         one PE (its area sizes the row)
+#   openlane/run_flow.sh row        32-PE row macro (+ netlist vs RTL check)
+#   openlane/run_flow.sh array      FeatureSkew + 32 row macros + OutputDeskew
+#   openlane/run_flow.sh core-sim   core RTL with the OpenRAM models, 3 matrix shapes
+#   openlane/run_flow.sh core-pre   core lint + synthesis + floorplan (~1 h)
+#   openlane/run_flow.sh core       core GemmAccelerator: 32 rows + 80 SRAM, full run (~7 h)
+#   openlane/run_flow.sh core-gls   original testbench on the final core netlist, 3 shapes
+#   openlane/run_flow.sh core-status   progress of the running / last core run
+#   openlane/run_flow.sh core-check    judge an existing core run again (no OpenLane)
+#   openlane/run_flow.sh core-route    route + signoff again from the post-CTS layout of a run
+#   openlane/run_flow.sh status     stages passed so far (openlane/LOG.md)
+#   Diagnostics: core-triage, core-probe, core-precheck, array-check (see the functions below).
 #
-# Each stage refuses to start until the one before it passed, prints
-# "STAGE <x> PASS|FAIL", appends a line (with peak RAM) to openlane/LOG.md,
-# and on PASS inside a git repo commits + tags "ol-<stage>-pass-<time>".
+# Each stage starts only after the one before it passed, prints STAGE <x> PASS|FAIL
+# and appends a line (with peak RAM) to openlane/LOG.md.
 #
-# OpenLane is started exactly the way your OpenLane checkout does it:
-#   make -C $OL quick_run QUICK_RUN_DESIGN="<design> -tag <tag> -overwrite"
-# i.e. same image, same PDK mount, same docker/podman user handling as
-# `make mount`, just non-interactive.
-#
-# Environment (defaults in brackets):
-#   OL     OpenLane checkout (has flow.tcl, Makefile)     [$HOME/OpenLane]
-#   REPO   original GEMM repo                             [../GEMM_32x32_KV260-main]
-#   PDK_ROOT / PDK   passed through to OpenLane's make    [OpenLane's defaults]
-#   GEN_ARGS extra geometry options for the row/array, e.g. "--util 0.45 --gap 30"
-#   CORE_GEN_ARGS options for gen_core_files.py (core floorplan only)
-#                 [--layout v3 --b-wide --b-gap-y 200 --strip 1000 --a-gap-x 200]; "" = layout v1
-#   TAG    run name of the core stage [core_v6]; the core-* stages after it
-#          default to the last core run started (state/core_last_tag.txt)
-#   FROM / TAG / ITERS / FORCE   for core-probe / core-route (see those stages)
-#   GRT_ALLOW / GRT_ITERS / DRT_ITERS / DRT_SEED(S) / GLB_RSZ_DESIGN / GLB_RSZ_TIMING   routing overrides for core-route
-#   DRT_SEEDS  detailed-router seeds tried in turn  [core: "42 7 23", core-route: "7 23 101"]
-#   ANT_ECO    antenna ECO rounds after routing, core / core-route [2]; 0 = off
-#   ANT_RPT    core-route: antenna report whose violations get diodes before the
-#              first global route [newest antenna_violators.rpt of FROM / FROM_check]
-#   GRT_ADJ    GRT_LAYER_ADJUSTMENTS (li1,met1,..,met5) for core / core-route / core-probe [config.tcl]
-#   MET5_OVER_SRAM=1  allow signal routing on met5 over the SRAMs again (core-v6 behaviour)
+# Environment [default]:
+#   OL          OpenLane checkout                        [$HOME/OpenLane]
+#   REPO        original GEMM_32x32_KV260 repo           [../GEMM_32x32_KV260-main]
+#   TAG         core: run name [core_v9]; core-gls / core-check / core-status: run to use
+#   FROM        core-route: run to continue from          [last core run]
+#   MIN_DISK_GB core / core-route stop below this free disk [40]
+#   DRT_SEEDS   detailed-router seeds tried in turn       [core: "42 7 23"]
+#   ANT_ECO     antenna ECO rounds after routing, 0 = off [3]
+#   ROW         core-gls: row model, rtl or gl (gate netlist of the row run) [rtl]
+#   AUTO_COMMIT=1  git commit + tag the kit on every PASS
 # ---------------------------------------------------------------------------
 set -uo pipefail
 
@@ -78,7 +57,7 @@ finish() {   # finish <stage>
     local st=$1 result=PASS
     [ $FAILS -gt 0 ] && result=FAIL
     echo "| $STAMP | $st | $result | $PEAK | $NOTE |" >> "$LOG"
-    if [ $result = PASS ] && git -C "$KIT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if [ $result = PASS ] && [ "${AUTO_COMMIT:-0}" = 1 ] && git -C "$KIT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         git -C "$KIT" add -A rtl_asic sim openlane tools 2>/dev/null
         git -C "$KIT" commit -qm "OpenLane stage $st PASS" >/dev/null 2>&1
         git -C "$KIT" tag "ol-$st-pass-$STAMP" 2>/dev/null && echo "  git tag ol-$st-pass-$STAMP"
@@ -87,7 +66,23 @@ finish() {   # finish <stage>
     else printf "\n\033[31mSTAGE %s FAIL\033[0m (%d problems)\n" "$st" "$FAILS"; exit 1; fi
 }
 
-mem_watch_start() {   # mem_watch_start <file>: every 10 s, biggest EDA process RSS + free RAM + swap
+disk_free_gb() { df -BG --output=avail "$OL" 2>/dev/null | tail -1 | tr -dc '0-9'; }
+
+need_disk() {   # need_disk <GB>: stop before OpenLane starts when the disk of $OL has less free
+    # (core_v7r died at 13:01 03/10 with the disk full: OpenROAD could not write a DEF)
+    local want=$1 have
+    have=$(disk_free_gb)
+    [ -n "$have" ] || { echo "  (free disk space of $OL unknown - not checked)"; return 0; }
+    if [ "$have" -lt "$want" ]; then
+        echo "  disk: only $have GB free on the disk of $OL, this stage needs at least $want GB"
+        echo "  (a core route + signoff writes ~25 GB). Remove old runs/<tag>/tmp and results first,"
+        echo "  or set MIN_DISK_GB lower if you know it fits."
+        exit 1
+    fi
+    echo "  disk free    : $have GB (this stage needs $want)"
+}
+
+mem_watch_start() {   # mem_watch_start <file>: every 10 s, biggest EDA process RSS + free RAM + swap + free disk (GB)
     MEMW_FILE=$1; : > "$MEMW_FILE"
     (
         while :; do
@@ -95,7 +90,7 @@ mem_watch_start() {   # mem_watch_start <file>: every 10 s, biggest EDA process 
                                                  END { printf "%d %s", m / 1024, (c == "" ? "-" : c) }')
             a=$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo)
             s=$(awk '/^SwapTotal:/{t=$2} /^SwapFree:/{f=$2} END{print int((t-f)/1024)}' /proc/meminfo)
-            echo "$(date +%H:%M:%S) $p $a $s" >> "$MEMW_FILE"
+            echo "$(date +%H:%M:%S) $p $a $s $(disk_free_gb)" >> "$MEMW_FILE"
             sleep 10
         done
     ) &
@@ -146,9 +141,15 @@ EOF
 # routing overrides shared by core / core-route / core-probe, appended to $ovr
 route_overrides() {
     [ -n "${GRT_ADJ:-}" ] && ovr+=$'\n'"set ::env(GRT_LAYER_ADJUSTMENTS) \"$GRT_ADJ\""
+    # GRT_ITERS=N: congestion iterations of the global route, for core and core-route
+    # (FastRoute here has crashed on very long detours in late iterations - try a probe first)
+    [ -n "${GRT_ITERS:-}" ] && ovr+=$'\n'"set ::env(GRT_OVERFLOW_ITERS) $GRT_ITERS"
+    # ANT_MARGIN=N: GRT_ANT_MARGIN (%) of repair_antennas in the global route, for core and core-route
+    # (v9 post-CTS, met1 0.5: margin 50 -> same overflow 46, 66k diodes instead of 39k)
+    [ -n "${ANT_MARGIN:-}" ] && ovr+=$'\n'"set ::env(GRT_ANT_MARGIN) $ANT_MARGIN"
     [ "${MET5_OVER_SRAM:-0}" = 1 ] && ovr+=$'\n'"catch { unset ::env(GRT_OBS) }"
     [ "${1:-}" = probe ] && return 0
-    ovr+=$'\n'"set ::env(GEMM_ANT_ECO_ITERS) ${ANT_ECO:-2}"
+    ovr+=$'\n'"set ::env(GEMM_ANT_ECO_ITERS) ${ANT_ECO:-3}"
     return 0
 }
 
@@ -189,6 +190,7 @@ st_sim() {
 st_pe() {
     need sim
     say "pe: one ProcessingElement"
+    ol_patches || { fail "patch OpenLane scripts"; finish pe; }
     "$HERE/install_into_openlane.sh" "$OL" >/dev/null || { fail "install into $OL"; finish pe; }
     ol_run gemm_pe pe_v1
     check_run "$RUNDIR"
@@ -206,6 +208,7 @@ st_row() {
     need pe
     say "row: 32-PE macro"
     local area; area=$(cat "$STATE/pe_area.txt")
+    ol_patches || { fail "patch OpenLane scripts"; finish row; }
     # shellcheck disable=SC2086
     "$HERE/install_into_openlane.sh" "$OL" --pe-area "$area" ${GEN_ARGS:-} | tee "$STATE/geometry.txt" \
         || { fail "install/geometry"; finish row; }
@@ -216,6 +219,10 @@ st_row() {
         python3 "$KIT/tools/check_row_lef.py" "$lef" 32 8 5 && pass "row LEF: power pins + 928 top/bottom pins aligned" \
             || fail "row LEF checks"
     else fail "no $lef"; fi
+    # LVS only compares layout with the netlist; this compares the netlist with the RTL
+    if "$KIT/sim/row_equiv.sh" "$RUNDIR/results/final/verilog/gl/ProcessingElementRow.nl.v" > "$HERE/logs/row_equiv_$STAMP.log" 2>&1; then
+        pass "row netlist = RTL (random stimulus, $(grep -o 'cycles=[0-9]*' "$HERE/logs/row_equiv_$STAMP.log"))"
+    else fail "row netlist differs from the RTL:"; tail -n 6 "$HERE/logs/row_equiv_$STAMP.log" | sed 's/^/    /'; fi
     NOTE="$(head -1 "$STATE/geometry.txt")"
     finish row
 }
@@ -229,6 +236,7 @@ st_array() {
         python3 "$KIT/tools/clock_latency.py" "$prev" "$HERE/designs/gemm_array/clk_latency.tcl" \
             || echo "  (no clock latency from the previous run - array.sdc falls back to base.sdc values)"
     fi
+    ol_patches || { fail "patch OpenLane scripts"; finish array; }
     # re-copy RTL + configs (same geometry: same PE area and GEN_ARGS as the row)
     # shellcheck disable=SC2086
     "$HERE/install_into_openlane.sh" "$OL" --pe-area "$(cat "$STATE/pe_area.txt")" ${GEN_ARGS:-} >/dev/null \
@@ -356,24 +364,50 @@ PYX
     echo "  detailed router seed now settable (DRT_OR_SEED) in $f (original kept as droute.tcl.orig_gemm)"
 }
 
-ol_patches() { gpl_hook && antenna_fix && dpl_hook && drt_seed_hook; }
+pinswap_fix() {   # repair_timing without pin swapping (resizer_timing.tcl, resizer_routing_timing.tcl)
+    # OpenROAD 41a51eaf swapped A_N and B of an and2b_1 in row_v1 (step 17,
+    # "RSZ-0043 Swapped pins on 1 instances"): and2b is not commutative, the
+    # netlist changed function and LVS cannot see it (layout = wrong netlist).
+    local f
+    for f in "$OL/scripts/openroad/resizer_timing.tcl" "$OL/scripts/openroad/resizer_routing_timing.tcl"; do
+        [ -f "$f" ] || continue
+        grep -q -- "-skip_pin_swap" "$f" && continue
+        [ -f "$f.orig_gemm" ] || cp "$f" "$f.orig_gemm"
+        python3 - "$f" <<'PY' || { echo "  could not add -skip_pin_swap to $f"; return 1; }
+import sys
+p = sys.argv[1]; s = open(p).read()
+key = "repair_timing -setup \\\n"
+if key not in s:
+    sys.exit(1)
+open(p, "w").write(s.replace(key, "repair_timing -setup -skip_pin_swap \\\n"))
+PY
+        echo "  repair_timing -skip_pin_swap in $f (original kept as ${f##*/}.orig_gemm)"
+    done
+}
+
+ol_patches() { gpl_hook && antenna_fix && dpl_hook && drt_seed_hook && pinswap_fix; }
 
 core_install() {
     ol_patches || return 1
-    # shellcheck disable=SC2086
-    CORE_GEN_ARGS=${CORE_GEN_ARGS:-} "$HERE/install_into_openlane.sh" "$OL" --pe-area "$(cat "$STATE/pe_area.txt")" ${GEN_ARGS:-} >/dev/null \
-        || { fail "install into $OL (floorplan checks?)"; return 1; }
-    sed 's/^/  /' "$HERE/designs/gemm_core/floorplan.txt"
-    local root sram=""
+    local root sram="" lib=""
     for root in "${PDK_ROOT:-}" "$HOME/.volare" "$HOME/.ciel" "$OL/pdks"; do
         [ -n "$root" ] && [ -f "$root/${PDK:-sky130A}/libs.ref/sky130_sram_macros/lef/sky130_sram_2kbyte_1rw1r_32x512_8.lef" ] \
-            && { sram=$root/${PDK:-sky130A}/libs.ref/sky130_sram_macros; break; }
+            && { sram=$root/${PDK:-sky130A}/libs.ref/sky130_sram_macros; lib=$root/${PDK:-sky130A}/libs.ref/sky130_fd_sc_hd/lef/sky130_fd_sc_hd.lef; break; }
     done
-    if [ -n "$sram" ]; then pass "OpenRAM macro views found in $sram"
+    if [ -n "$sram" ]; then
+        pass "OpenRAM macro views found in $sram"
+        # the OpenRAM LEF has no antenna data: config.tcl lists this annotated copy in EXTRA_LEFS
+        python3 "$HERE/designs/gemm_core/macro_antenna_lef.py" --in "$sram/lef/sky130_sram_2kbyte_1rw1r_32x512_8.lef" \
+            --lib-lef "$lib" --out "$HERE/designs/gemm_core/sram_antenna.lef" \
+            || { fail "macro_antenna_lef.py (SRAM LEF with antenna data)"; return 1; }
     else
         echo "  note: OpenRAM macro LEF not found under \$PDK_ROOT, ~/.volare, ~/.ciel, \$OL/pdks;"
         echo "        config.tcl stops with a clear error inside OpenLane if they are really missing"
     fi
+    # shellcheck disable=SC2086
+    CORE_GEN_ARGS=${CORE_GEN_ARGS:-} "$HERE/install_into_openlane.sh" "$OL" --pe-area "$(cat "$STATE/pe_area.txt")" ${GEN_ARGS:-} >/dev/null \
+        || { fail "install into $OL (floorplan checks?)"; return 1; }
+    sed 's/^/  /' "$HERE/designs/gemm_core/floorplan.txt"
 }
 
 st_core_pre() {
@@ -412,12 +446,13 @@ st_core_pre() {
 st_core() {
     need core-pre
     say "core: GemmAccelerator full run (rows + 80 OpenRAM macros) - expect several hours"
+    need_disk "${MIN_DISK_GB:-40}"
     local prev; prev=$(core_best_run)
     if [ -d "$prev/reports/signoff" ]; then
         python3 "$KIT/tools/clock_latency.py" "$prev" "$HERE/designs/gemm_core/clk_latency.tcl" \
             || echo "  (no clock latency from the previous core run - using the seed from the array)"
     fi
-    local tag=${TAG:-core_v7}
+    local tag=${TAG:-core_v9}
     # floorplan of v5/v6 unless CORE_GEN_ARGS is given (set but empty = layout v1)
     CORE_GEN_ARGS=${CORE_GEN_ARGS-$CORE_GEN_DEFAULT}
     echo "$tag" > "$STATE/core_last_tag.txt"
@@ -548,6 +583,7 @@ st_core_status() {   # where the running (or last) core run is - reads files onl
     local p
     p=$(ps -eo etime=,rss=,comm= 2>/dev/null | awk '$3 ~ /^(openroad|yosys|magic|netgen|klayout)/ {printf "%s (%d MB, %s)  ", $3, $2/1024, $1}')
     echo "  EDA process  : ${p:-none running}"
+    echo "  disk free: $(disk_free_gb) GB"
 }
 
 st_core_triage() {
@@ -589,6 +625,7 @@ st_core_probe() {
     local from=${FROM:-$(core_last_tag)} iters=${ITERS:-0} tag=core_probe
     local src=$OL/designs/gemm_core/runs/$from run=$OL/designs/gemm_core/runs/core_probe
     say "core-probe: global route only on the post-CTS layout of $from ($iters congestion iterations)"
+    need_disk 10
     [ -f "$src/config.tcl" ] || { echo "  no $src/config.tcl - run the core stage first"; exit 1; }
     rm -f "$HERE/designs/gemm_core/overrides.tcl" "$OL/designs/gemm_core/overrides.tcl"
     local ovr="# written by run_flow.sh core-probe $STAMP"
@@ -617,6 +654,15 @@ st_core_probe() {
         else
             echo "  missing for the map: ${rpt##*/} ${def:-<def>} ${lef##*/}"
         fi
+        local guide=$run/tmp/routing/grt_probe.guide
+        if [ -f "$guide" ] && [ -f "$def" ] && [ -f "$lef" ]; then
+            echo "--- nets the global route left through a macro (macro_cross.py)"
+            python3 "$HERE/designs/gemm_core/macro_cross.py" --guide "$guide" --def "$def" --lef "$lef" \
+                --grt-obs "$(core_state_var "$run" GRT_OBS)" --report "$run/reports/routing/macro_cross.rpt" \
+                | sed -n '1,/^  nets with a guide/p'
+        else
+            echo "  no probe guide - macro_cross.py skipped"
+        fi
         local odb=$run/tmp/routing/grt_probe.odb
         [ -f "$odb" ] && echo "  layout + congestion map: ${odb#"$OL"/} ($(du -h "$odb" | cut -f1); delete when done)"
         NOTE="probe of $from: $(grep -c 'violation type' "$rpt" 2>/dev/null || echo 0) overflowing gcell edges"
@@ -635,6 +681,7 @@ st_core_precheck() {   # early look at later steps on an existing run, no routin
     local from=${FROM:-$(core_last_tag)}
     local tag=${from}_check src=$OL/designs/gemm_core/runs/$from
     say "core-precheck: antenna check + timing of the routed layout of $from (run $tag, no routing)"
+    need_disk 10
     [ -f "$src/config.tcl" ] || { echo "  no $src/config.tcl - nothing to check"; exit 1; }
     rm -f "$HERE/designs/gemm_core/overrides.tcl" "$OL/designs/gemm_core/overrides.tcl"
     CORE_GEN_ARGS=$(cat "$STATE/core_gen_args_$from.txt" 2>/dev/null) core_install >/dev/null || exit 1
@@ -662,6 +709,7 @@ st_core_route() {
     local tag=${TAG:-${from}r}
     local src=$OL/designs/gemm_core/runs/$from
     say "core-route: routing + signoff from the post-CTS layout of $from (new run $tag)"
+    need_disk "${MIN_DISK_GB:-40}"
     [ -f "$src/config.tcl" ] || { echo "  no $src/config.tcl - nothing to continue from"; exit 1; }
     [ "$from" != "$tag" ] || { echo "  TAG must differ from FROM"; exit 1; }
     python3 "$KIT/tools/core_triage.py" "$src" > "$STATE/triage_$from.txt"
@@ -698,10 +746,9 @@ st_core_route() {
             fi ;;
     esac
     # GRT_ALLOW=1: global route may end with overflow (detailed routing fixes it);
-    # GRT_ITERS=N: congestion iterations (FastRoute here crashes on very long
+    # GRT_ITERS is in route_overrides (FastRoute here crashes on very long
     # detours, which only show up in the late iterations of a congested design)
     [ -n "${GRT_ALLOW:-}" ] && ovr+=$'\n'"set ::env(GRT_ALLOW_CONGESTION) $GRT_ALLOW"
-    [ -n "${GRT_ITERS:-}" ] && ovr+=$'\n'"set ::env(GRT_OVERFLOW_ITERS) $GRT_ITERS"
     # DRT_ITERS=N: cap on detailed-routing optimisation iterations (default 64)
     [ -n "${DRT_ITERS:-}" ] && ovr+=$'\n'"set ::env(DRT_OPT_ITERS) $DRT_ITERS"
     [ -n "${GLB_RSZ_DESIGN:-}" ] && ovr+=$'\n'"set ::env(GLB_RESIZER_DESIGN_OPTIMIZATIONS) $GLB_RSZ_DESIGN"
@@ -715,7 +762,7 @@ st_core_route() {
     route_overrides
     # antenna ECO round 0: diodes for the violations an earlier route of this
     # same post-CTS netlist had, before the first global route
-    if [ "${ANT_ECO:-2}" != 0 ]; then
+    if [ "${ANT_ECO:-3}" != 0 ]; then
         local arpt=${ANT_RPT:-}
         [ -n "$arpt" ] || arpt=$(ls -t "$src"/reports/signoff/*antenna_violators.rpt \
             "$OL/designs/gemm_core/runs/${from}_check"/reports/signoff/*antenna_violators.rpt 2>/dev/null | head -1)
@@ -765,21 +812,31 @@ core_verdict() {
     finish core
 }
 
-st_core_gls() {
-    need core
-    say "core-gls: original testbench on the final gate-level netlist of the core"
+st_core_gls() {   # original testbench on the final netlist, 3 matrix shapes, cycles vs the FPGA RTL
+    need sim
+    local run
+    if [ -n "${TAG:-}" ]; then run=$OL/designs/gemm_core/runs/$TAG
+    else run=$(ls -td "$OL"/designs/gemm_core/runs/*/results/final/verilog/gl 2>/dev/null | head -1); run=${run%/results/final/verilog/gl}; fi
+    [ -f "$run/results/final/verilog/gl/GemmAccelerator.nl.v" ] \
+        || { echo "no core run with results/final/verilog/gl/GemmAccelerator.nl.v (TAG=<run> to pick one)"; exit 1; }
+    say "core-gls: original testbench on the netlist of ${run#"$OL"/} (rows: ${ROW:-rtl})"
     local out=$HERE/logs/core_gls_$STAMP; mkdir -p "$out"
-    "$KIT/sim/run_system.sh" orig "$REPO" > "$out/sys_orig.log" 2>&1 || true
-    grep -E "RESULT_VALID_FIRST|RESULT_ACCEPT" "$KIT/sim/build_system_orig/system.log" > "$out/cycles_orig.txt" 2>/dev/null
-    local run; run=$(core_best_run)
-    echo "  netlist from ${run#"$OL"/}"
-    if OL=$OL "$KIT/sim/run_gls.sh" "$run" "$REPO" > "$out/gls.log" 2>&1; then
-        pass "gate-level: OVERALL PASS"
-    else fail "gate-level sim failed (see ${out#"$KIT"/}/gls.log)"; tail -n 8 "$out/gls.log" | sed 's/^/    /'; fi
-    if [ -s "$out/cycles_orig.txt" ] && diff -q "$out/cycles_orig.txt" "$KIT/sim/build_gls/cycles_gls.txt" >/dev/null 2>&1; then
-        pass "gate-level: same cycle for all $(wc -l < "$out/cycles_orig.txt") result events as the FPGA RTL"
-    else fail "gate-level result cycles differ from the FPGA RTL"; fi
-    NOTE="logs in ${out#"$KIT"/}"
+    local shape tag t0
+    # "" = the testbench's own 64x64x64; the other two reach the second bank of the 1024-word memories
+    for shape in "" "8,32,544" "16,992,32"; do
+        tag=${shape:+_M$(echo "$shape" | awk -F, '{print $1"K"$2"N"$3}')}
+        TB_SHAPE="$shape" "$KIT/sim/run_system.sh" orig "$REPO" > "$out/sys$tag.log" 2>&1 || true
+        grep -E "RESULT_VALID_FIRST|RESULT_ACCEPT" "$KIT/sim/build_system_orig$tag/system.log" > "$out/cycles_orig$tag.txt" 2>/dev/null
+        t0=$(date +%s)
+        if TB_SHAPE="$shape" BUILD="$KIT/sim/build_gls$tag" OL=$OL "$KIT/sim/run_gls.sh" "$run" "$REPO" > "$out/gls$tag.log" 2>&1; then
+            pass "${shape:-64,64,64}: OVERALL PASS ($(( $(date +%s) - t0 )) s)"
+        else fail "${shape:-64,64,64}: gate-level sim failed (see ${out#"$KIT"/}/gls$tag.log)"; tail -n 4 "$out/gls$tag.log" | sed 's/^/    /'; fi
+        cp "$KIT/sim/build_gls$tag/cycles_gls.txt" "$out/cycles_gls$tag.txt" 2>/dev/null
+        if [ -s "$out/cycles_orig$tag.txt" ] && diff -q "$out/cycles_orig$tag.txt" "$out/cycles_gls$tag.txt" >/dev/null 2>&1; then
+            pass "${shape:-64,64,64}: same cycle for all $(wc -l < "$out/cycles_orig$tag.txt") result events as the FPGA RTL"
+        else fail "${shape:-64,64,64}: result cycles differ from the FPGA RTL"; fi
+    done
+    NOTE="${run##*/}, logs in ${out#"$KIT"/}"
     finish core-gls
 }
 
@@ -805,5 +862,5 @@ case "${1:-}" in
                 say "core-check: judge the existing run ${RUNDIR#"$OL"/} (no OpenLane)"; core_verdict ;;
     all)   "$0" sim && "$0" pe && "$0" row && "$0" array && "$0" core-sim && "$0" core-pre && "$0" core ;;
     status) cat "$LOG" ;;
-    *) sed -n '2,53p' "$0"; exit 2 ;;
+    *) sed -n '2,/^# ----/p' "$0" | sed '$d'; exit 2 ;;
 esac

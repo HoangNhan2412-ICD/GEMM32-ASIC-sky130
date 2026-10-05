@@ -30,11 +30,17 @@ set ::env(SYNTH_DEFINES) [list GEMM_DP_RESET=$::env(GEMM_DP_RESET) SRAM_USE_SKY1
 set ROW  $::env(DESIGN_DIR)/../gemm_row/runs/row_v1/results/final
 set SRAM_NAME sky130_sram_2kbyte_1rw1r_32x512_8
 set SRAM $::env(PDK_ROOT)/$::env(PDK)/libs.ref/sky130_sram_macros
+# The OpenRAM LEF has no antenna data, so ARC / repair_antennas / the antenna ECO
+# could not see the gates behind the SRAM pins. sram_antenna.lef is the same LEF
+# (same macro name) with ANTENNAGATEAREA / ANTENNADIFFAREA on every signal pin,
+# written by macro_antenna_lef.py (run_flow.sh core_install); values and reasons
+# in its header. The row LEF already has antenna data (940 gate, 1868 diff).
+set SRAM_LEF $::env(DESIGN_DIR)/sram_antenna.lef
 foreach f [list $ROW/lef/ProcessingElementRow.lef $ROW/gds/ProcessingElementRow.gds \
-                $SRAM/lef/$SRAM_NAME.lef $SRAM/gds/$SRAM_NAME.gds] {
+                $SRAM_LEF $SRAM/gds/$SRAM_NAME.gds] {
     if { ![file exists $f] } { puts stderr "\[ERROR\]: gemm_core: missing $f"; exit 1 }
 }
-set ::env(EXTRA_LEFS)      [list $ROW/lef/ProcessingElementRow.lef $SRAM/lef/$SRAM_NAME.lef]
+set ::env(EXTRA_LEFS)      [list $ROW/lef/ProcessingElementRow.lef $SRAM_LEF]
 set ::env(EXTRA_GDS_FILES) [list $ROW/gds/ProcessingElementRow.gds $SRAM/gds/$SRAM_NAME.gds]
 set libs [list]
 if { [file exists $ROW/lib/ProcessingElementRow.lib] } { lappend libs $ROW/lib/ProcessingElementRow.lib }
@@ -108,25 +114,42 @@ set ::env(CTS_CLK_MAX_WIRE_LENGTH)  0
 set ::env(CTS_CLK_BUFFER_LIST) "sky130_fd_sc_hd__clkbuf_16 sky130_fd_sc_hd__clkbuf_8 sky130_fd_sc_hd__clkbuf_4"
 
 # ---- hold (array passed with these; setup had > 6 ns spare)
-set ::env(PL_RESIZER_HOLD_SLACK_MARGIN)        0.3
+# core_v7r: hold -0.01 ns (one path in the OutputDeskew delay line,
+# _52351_ -> _52372_) with 0.3, setup +1.21 ns to spare -> 0.5 from core_v8.
+# core_v9 (0.5): hold -0.12 ns at the Fastest corner with max RC (one path,
+# OutputDeskew delay line again), setup typical +1.01 ns. core_v10 tried 0.7:
+# hold clean at every corner, but setup typical -0.06 ns (one path) and the
+# slow corner 1.4 ns worse -> back to 0.5.
+# Acts in the post-CTS resizer, so it needs a full core run, not core-route.
+set ::env(PL_RESIZER_HOLD_SLACK_MARGIN)        0.5
 set ::env(GLB_RESIZER_HOLD_SLACK_MARGIN)       0.4
 set ::env(PL_RESIZER_HOLD_MAX_BUFFER_PERCENT)  80
 set ::env(GLB_RESIZER_HOLD_MAX_BUFFER_PERCENT) 80
 
 # ---- antenna (array passed with these)
-set ::env(RUN_HEURISTIC_DIODE_INSERTION) 1
+# Heuristic diodes OFF from core_v8. They were the main source of global-route
+# congestion on the core: global route of core_v7r's post-CTS layout, ITERS 18,
+# met1 adjustment 0.5 - without them total overflow 46 and no net through a
+# macro; with them (core_v7r) 515 and net3191 left straight through an SRAM
+# (23 met2 shorts with every DRT seed); more congestion iterations made it
+# worse (ITERS 30: 2487, 26 nets through SRAMs). Antennas now rely on
+# repair_antennas in the global route plus the antenna ECO rounds after
+# detailed routing (run_flow.sh ANT_ECO=3).
+# The OpenRAM LEF has no ANTENNA data; run_flow.sh writes sram_antenna.lef
+# (macro_antenna_lef.py, smallest gate/diffusion area of the hd library) so
+# repair_antennas, ARC and the ECO see the SRAM pins (core_v9: 0 left on them).
+set ::env(RUN_HEURISTIC_DIODE_INSERTION) 0
 set ::env(GRT_ANT_ITERS)                 30
 set ::env(GRT_ANT_MARGIN)                30
 set ::env(GRT_MAX_DIODE_INS_ITERS)       3
 set ::env(HEURISTIC_ANTENNA_THRESHOLD)   50
-# NB: the OpenRAM LEF carries no ANTENNA data, so the antenna checker cannot
-# see the gates behind the SRAM pins; the heuristic insertion above still puts
-# a diode on every input pin (SRAM pins included) of nets longer than 50 um.
+# GRT_ANT_MARGIN 50 (core_v10): 30k more diodes, same ~220 nets left -> 30.
 
 # ---- signoff on a 54 mm2 die with 80 OpenRAM macros
 # Magic DRC on the abstract view: the OpenRAM bitcells break generic sky130
 # rules on purpose (foundry-qualified cell, own rule deck) and the rows were
-# DRC-clean on their own run. KLayout XOR off (slow on this size).
+# DRC-clean on their own run. The standard cells still get their full layout
+# (gemm_magic_drc in route_signoff.tcl). KLayout XOR off (slow on this size).
 set ::env(MAGIC_DRC_USE_GDS) 0
 set ::env(RUN_KLAYOUT_XOR)   0
 # fewer router threads = lower peak RAM on a 16 GB machine
@@ -161,6 +184,10 @@ set ::env(GRT_ESTIMATE_PARASITICS) 0
 # logs/routing/*resizer_design.log says how much was left.
 set ::env(GRT_OVERFLOW_ITERS)   18
 set ::env(GRT_ALLOW_CONGESTION) 1
+# met1 capacity cut to 50 % for the global route: less long met1, fewer
+# antenna islands (post-CTS of core_v9: overflow 46; met1 0.65 -> more
+# antenna violations, 0.8 -> overflow 4490 and 53 nets through macros).
+set ::env(GRT_LAYER_ADJUSTMENTS) "0.99,0.5,0,0,0,0"
 # The timing repair after global routing (resizer_routing_timing.tcl) died
 # with SIGSEGV in the layout-v3 run, during the incremental re-routes of the nets it had
 # just buffered ("GRT-0009 rerouting N nets"). Setup/hold are already repaired

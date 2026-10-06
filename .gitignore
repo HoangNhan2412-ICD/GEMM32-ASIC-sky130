@@ -1,0 +1,22 @@
+# sinh ra khi chạy flow
+__pycache__/
+*.pyc
+openlane/logs/
+openlane/state/
+openlane/LOG.md
+openlane/LOG.md.bak
+openlane/designs/*/overrides.tcl
+openlane/designs/gemm_core/resume_params.tcl
+openlane/designs/gemm_core/full_params.tcl
+sim/build_*/
+sim/core_sim_quick_*/
+runs/
+
+# floorplan và số liệu do install_into_openlane.sh / run_flow.sh sinh lại mỗi lần chạy
+openlane/designs/*/sizes.tcl
+openlane/designs/*/macro.cfg
+openlane/designs/*/pin_order.cfg
+openlane/designs/*/clk_latency.tcl
+openlane/designs/gemm_core/floorplan.txt
+openlane/designs/gemm_core/sram_antenna.lef
+

@@ -18,8 +18,8 @@ lại được thì có ghi "chưa kiểm".
 | array | 3 giờ 14 phút |
 | core-sim | khoảng 2 phút |
 | core-pre | khoảng 10 phút |
-| core | khoảng 7 giờ (core_v9: 7h02m, trong đó route 3h22m) |
-| core-gls | khoảng 13 phút cho 3 kích thước ma trận (row bằng RTL) |
+| core | khoảng 7-9,5 giờ (core_v9: 7h02m, route 3h22m; core_v11: 9h26m, route 5h44m) |
+| core-gls | khoảng 40 phút cho 3 kích thước ma trận với row gate-level (core_v11: 327 s, khoảng 570 s, 1317 s); khoảng 13 phút nếu `ROW=rtl` |
 
 ## 2. Cài đặt
 
@@ -67,14 +67,15 @@ hoặc `FAIL` ở cuối. Run của OpenLane nằm ở ~/OpenLane/designs/<desig
 | `openlane/run_flow.sh array` | FeatureSkew + 32 row + OutputDeskew | 32 macro đặt đúng, DRC/LVS sạch | gemm_array/runs/array_v1 |
 | `openlane/run_flow.sh core-sim` | RTL core với model SRAM OpenRAM, 3 kích thước | OVERALL PASS, trùng chu kỳ | openlane/logs/core_sim_* |
 | `openlane/run_flow.sh core-pre` | Lint, synthesis, floorplan của core | 80 SRAM, 32 row, macro đặt đủ | gemm_core/runs/core_pre |
-| `openlane/run_flow.sh core` | Run core đầy đủ | xem mục 5 | gemm_core/runs/core_v9 |
+| `openlane/run_flow.sh core` | Run core đầy đủ | xem mục 5 | gemm_core/runs/core_v11 |
 | `openlane/run_flow.sh core-gls` | Testbench gốc trên netlist cuối của core, 3 kích thước | OVERALL PASS, trùng chu kỳ cả 3 | openlane/logs/core_gls_* |
 
 GDS của core: ~/OpenLane/designs/gemm_core/runs/<tag>/results/final/gds/GemmAccelerator.gds.
 
-`core` chạy với cấu hình của core_v9, không cần biến môi trường. TAG đặt tên run khác (mặc định core_v9).
-`core-gls` dùng run core mới nhất có results/final; TAG chọn run khác. Mặc định row được mô phỏng bằng RTL;
-`ROW=gl` dùng netlist của row (chậm hơn, khoảng 7 GB RAM).
+`core` chạy với cấu hình của core_v11 (giống core_v9, chỉ khác row macro đã chạy lại), không cần biến môi trường. TAG đặt tên run khác (mặc định core_v11).
+`core-gls` dùng run core mới nhất có results/final; TAG chọn run khác. Mặc định row được mô phỏng bằng netlist
+gate-level của row (`ROW=gl`, đỉnh 3,1 GB RAM): chỉ cách này mới thấy lỗi trong netlist row. `ROW=rtl` dùng RTL
+của row, nhanh hơn, chỉ để thử nhanh.
 
 ## 4. Theo dõi khi chạy core
 
@@ -94,12 +95,12 @@ RAM theo thời gian: openlane/logs/mem_gemm_core_<tag>_<thời điểm>.txt.
 
 Tổng hợp (miễn timing ở cổng I/O vì đây là core, chưa có vòng pad):
 
-    python3 openlane/check_openlane_run.py --waive-io-timing ~/OpenLane/designs/gemm_core/runs/core_v9
+    python3 openlane/check_openlane_run.py --waive-io-timing ~/OpenLane/designs/gemm_core/runs/core_v11
 
-core_v9 cho: router 0 lỗi, LVS 0 lỗi, setup nội bộ +1,01 ns, hold nội bộ +0,11 ns, 209 net antenna, RAM đỉnh
-13,0 GB. Script vẫn ghi RESULT: FAIL vì hai mục dưới.
+core_v11 cho: router 0 lỗi, LVS 0 lỗi, setup nội bộ +1,21 ns, hold nội bộ +0,27 ns, 219 pin / 205 net antenna,
+RAM đỉnh 13,5 GB. Script vẫn ghi RESULT: FAIL vì hai mục dưới.
 
-Antenna: còn 209 net, đa số vượt nhẹ (trung vị 1,4 lần giới hạn), không net nào trên chân SRAM. Router của
+Antenna: còn 205 net, đa số vượt nhẹ (trung vị 1,4 lần giới hạn), không net nào trên chân SRAM. Router của
 OpenROAD bản này không tính antenna khi đi dây và không có chế độ ECO. Flow chèn diode ở global route, rồi
 sau detailed route chạy 3 vòng ECO (đặt diode cạnh cổng vi phạm và route lại). Mỗi lần route lại sinh vi phạm
 mới ở chỗ khác, nên con số dừng quanh 200.
@@ -108,33 +109,33 @@ Magic DRC: Magic đọc SRAM và row macro bằng view abstract, trong đó vùn
 mép macro bị báo lỗi khoảng cách kim loại rộng (met4.5b, met2.3b) mà layout thật không có. Kiểm lại từng cờ
 trên GDS đầy đủ:
 
-    tools/magic_macro_check.sh ~/OpenLane/designs/gemm_core/runs/core_v9
+    tools/magic_macro_check.sh ~/OpenLane/designs/gemm_core/runs/core_v11
 
-core_v9: 47 cờ (met4.5b 42, met2.3b 5), cả 47 nằm sát macro, 0 lỗi trên layout đầy đủ, RESULT: PASS. Báo
+core_v11: 48 cờ (đều met4.5b), cả 48 nằm sát macro, 0 lỗi trên layout đầy đủ, RESULT: PASS. Báo
 cáo: reports/signoff/magic_macro_check.rpt. Lệnh cần vài GB RAM, không chạy cạnh detailed route.
 
 Timing nhiều corner (setup ở ss/100°C/1,60V, hold ở ff/-40°C/1,95V, RC min và RC max):
 
-    python3 tools/sta_corners.py ~/OpenLane/designs/gemm_core/runs/core_v9
+    python3 tools/sta_corners.py ~/OpenLane/designs/gemm_core/runs/core_v11
 
-core_v9: setup -7,46 ns (RC max) và -6,29 ns (RC min) ở corner chậm, tức khoảng 57 MHz; hold sạch với RC min,
--0,12 ns một path với RC max.
+core_v11: setup -7,61 ns (RC max) và -6,35 ns (RC min) ở corner chậm, tức khoảng 57 MHz; hold sạch với cả RC min
+và RC max.
 
 Công suất ở tt/25°C/1,80V, 100 MHz:
 
-    tools/power.sh ~/OpenLane/designs/gemm_core/runs/core_v9                  # activity mặc định của OpenSTA
-    tools/power.sh ~/OpenLane/designs/gemm_core/runs/core_v9 --vcd 2300 3200  # activity từ mô phỏng
+    tools/power.sh ~/OpenLane/designs/gemm_core/runs/core_v11                  # activity mặc định của OpenSTA
+    tools/power.sh ~/OpenLane/designs/gemm_core/runs/core_v11 --vcd 2300 3200  # activity từ mô phỏng
 
-core_v9: 2,89 W với activity mặc định; 1,53 W với activity từ VCD (mô phỏng gate-level kích thước 64x64x64,
-chu kỳ 2300-3200 là pha tính của job thứ hai). Trong 1,53 W: SRAM 0,45 W (80 macro), row 0,78 W, phần còn lại
-của core 0,30 W. Thư viện OpenRAM cho cùng năng lượng mỗi cạnh clock dù SRAM có được chọn hay không, nên phần
+core_v11: 2,89 W với activity mặc định; 1,53 W với activity từ VCD (mô phỏng gate-level kích thước 64x64x64,
+row gate-level, chu kỳ 2300-3200 là pha tính của job thứ hai). Trong 1,53 W: SRAM 0,45 W (80 macro), row 0,78 W,
+phần còn lại của core 0,30 W. Thư viện OpenRAM cho cùng năng lượng mỗi cạnh clock dù SRAM có được chọn hay không, nên phần
 SRAM là cận trên. Mô phỏng không có trễ cổng nên không tính glitch. Đỉnh 204,8 GOPS (2 x 32 x 32 x 100 MHz),
-tức 134 GOPS/W và 2,83 GOPS/mm². Bản --vcd mất khoảng 15-20 phút (cửa sổ 900 chu kỳ), cần khoảng 8 GB RAM và 0,7 GB ổ.
+tức 134 GOPS/W và 2,83 GOPS/mm². Bản --vcd mất khoảng 15 phút (core_v11: 13m27s, cửa sổ 900 chu kỳ), cần khoảng 8 GB RAM (mô phỏng đỉnh 7,0 GB) và 0,7 GB ổ.
 
-Mô phỏng gate-level: `core-gls` in PASS và số sự kiện trùng chu kỳ cho từng kích thước (core_v9: 258, 274 và
-34 sự kiện, row bằng RTL). Log ở openlane/logs/core_gls_<thời điểm>/. Với `ROW=gl`, core_v9 sai cột 23 vì row
-macro row_v1 bị resizer đổi chân một cell (NHATKY.md). Flow hiện tại đã chặn lỗi này ở tầng row; cần chạy lại
-row và core để có layout đúng.
+Mô phỏng gate-level: `core-gls` in PASS và số sự kiện trùng chu kỳ cho từng kích thước. core_v11 với row
+gate-level: PASS cả 3 kích thước (64x64x64, 8x32x544, 16x992x32), trùng chu kỳ 258, 274 và 34 sự kiện với RTL
+FPGA. Log ở openlane/logs/core_gls_<thời điểm>/. Bản core_v9 cũ sai cột 23 khi mô phỏng với row gate-level, do
+row macro bị resizer đổi chân một cell (NHATKY.md); flow hiện tại chặn lỗi này ở tầng row.
 
 ## 6. Xem GDS bằng KLayout
 
@@ -142,7 +143,7 @@ Máy có KLayout:
 
     klayout -nn ~/.ciel/sky130A/libs.tech/klayout/tech/sky130A.lyt \
             -l ~/.ciel/sky130A/libs.tech/klayout/tech/sky130A.lyp \
-            ~/OpenLane/designs/gemm_core/runs/core_v9/results/final/gds/GemmAccelerator.gds
+            ~/OpenLane/designs/gemm_core/runs/core_v11/results/final/gds/GemmAccelerator.gds
 
 Máy không cài được thì dùng KLayout 0.28.2 trong image OpenLane (cần X11; máy build dùng cách này):
 
@@ -152,7 +153,7 @@ Máy không cài được thì dùng KLayout 0.28.2 trong image OpenLane (cần 
         ghcr.io/the-openroad-project/openlane:ff5509f65b17bfa4068d5336495ab1718987ff69-amd64 \
         klayout -nn ~/.ciel/sky130A/libs.tech/klayout/tech/sky130A.lyt \
                 -l ~/.ciel/sky130A/libs.tech/klayout/tech/sky130A.lyp \
-                ~/OpenLane/designs/gemm_core/runs/core_v9/results/final/gds/GemmAccelerator.gds
+                ~/OpenLane/designs/gemm_core/runs/core_v11/results/final/gds/GemmAccelerator.gds
 
 Trong KLayout: Display > Full Hierarchy (phím `*`) để thấy bên trong macro; View > bỏ chọn Show Texts để tắt
 chữ. GDS core khoảng 670 MB, mở mất vài phút và vài GB RAM. (Phần thao tác trong giao diện chưa kiểm lại
@@ -169,7 +170,7 @@ Thiếu RAM: kernel giết OpenROAD ở detailed route, log dừng ngang không 
 Run bị ngắt giữa chừng (mất điện, đóng terminal) sau khi đã qua CTS: không cần chạy lại từ đầu.
 core-route lấy layout sau CTS của run đó, route và signoff lại trong run mới <tag>r:
 
-    FROM=core_v9 openlane/run_flow.sh core-route
+    FROM=core_v11 openlane/run_flow.sh core-route
 
 Net xuyên macro: sau global route, macro_cross.py tìm net mà global route vạch xuyên lòng macro hơn 50 um
 (SRAM chặn met1-met4 và met5 trên SRAM bị cấm, nên detailed route chắc chắn tạo short ở đó). Có net như vậy

@@ -22,12 +22,12 @@
 # Environment [default]:
 #   OL          OpenLane checkout                        [$HOME/OpenLane]
 #   REPO        original GEMM_32x32_KV260 repo           [../GEMM_32x32_KV260-main]
-#   TAG         core: run name [core_v9]; core-gls / core-check / core-status: run to use
+#   TAG         core: run name [core_v11]; core-gls / core-check / core-status: run to use
 #   FROM        core-route: run to continue from          [last core run]
 #   MIN_DISK_GB core / core-route stop below this free disk [40]
 #   DRT_SEEDS   detailed-router seeds tried in turn       [core: "42 7 23"]
 #   ANT_ECO     antenna ECO rounds after routing, 0 = off [3]
-#   ROW         core-gls: row model, rtl or gl (gate netlist of the row run) [rtl]
+#   ROW         core-gls: row model, rtl or gl (gate netlist of the row run) [gl]
 #   AUTO_COMMIT=1  git commit + tag the kit on every PASS
 # ---------------------------------------------------------------------------
 set -uo pipefail
@@ -452,7 +452,7 @@ st_core() {
         python3 "$KIT/tools/clock_latency.py" "$prev" "$HERE/designs/gemm_core/clk_latency.tcl" \
             || echo "  (no clock latency from the previous core run - using the seed from the array)"
     fi
-    local tag=${TAG:-core_v9}
+    local tag=${TAG:-core_v11}
     # floorplan of v5/v6 unless CORE_GEN_ARGS is given (set but empty = layout v1)
     CORE_GEN_ARGS=${CORE_GEN_ARGS-$CORE_GEN_DEFAULT}
     echo "$tag" > "$STATE/core_last_tag.txt"
@@ -819,7 +819,9 @@ st_core_gls() {   # original testbench on the final netlist, 3 matrix shapes, cy
     else run=$(ls -td "$OL"/designs/gemm_core/runs/*/results/final/verilog/gl 2>/dev/null | head -1); run=${run%/results/final/verilog/gl}; fi
     [ -f "$run/results/final/verilog/gl/GemmAccelerator.nl.v" ] \
         || { echo "no core run with results/final/verilog/gl/GemmAccelerator.nl.v (TAG=<run> to pick one)"; exit 1; }
-    say "core-gls: original testbench on the netlist of ${run#"$OL"/} (rows: ${ROW:-rtl})"
+    # rows as their gate netlist by default: with rtl rows a bad row netlist goes unseen
+    export ROW=${ROW:-gl}
+    say "core-gls: original testbench on the netlist of ${run#"$OL"/} (rows: $ROW)"
     local out=$HERE/logs/core_gls_$STAMP; mkdir -p "$out"
     local shape tag t0
     # "" = the testbench's own 64x64x64; the other two reach the second bank of the 1024-word memories

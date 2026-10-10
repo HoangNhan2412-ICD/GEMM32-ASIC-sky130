@@ -24,12 +24,22 @@
 # result-cycle lines proves the ASIC RTL keeps the FPGA cycle timing.
 #
 # The testbench is 32x32: GEMM_N must be 32 in rtl_asic/gemm_asic_cfg.vh.
+#
+# WRAP picks the AXI wrapper around the core (asic / asic-sram only):
+#   fpga (default) : rtl/GEMM_top.v + axi_ip/ of the KV260 repo, as before
+#   thin           : rtl_asic/axi/GEMM_top.v, GEMM_AXIS_REG=0 (same logic as
+#                    the KV260 wrapper, ASIC copy: same result cycles expected)
+#   reg            : rtl_asic/axi/GEMM_top.v, GEMM_AXIS_REG=1 (skid buffer on
+#                    every stream: results 1-2 cycles later, same values)
 # ---------------------------------------------------------------------------
 set -euo pipefail
 VARIANT=${1:-asic}
 KIT=$(cd "$(dirname "$0")/.." && pwd)
 REPO=${2:-${REPO:-$KIT/../GEMM_32x32_KV260-main}}
 TB_W_DEPTH=${TB_W_DEPTH:-1024}
+WRAP=${WRAP:-fpga}
+case "$WRAP" in fpga|thin|reg) ;; *) echo "WRAP must be fpga, thin or reg"; exit 2 ;; esac
+[ "$VARIANT" = orig ] && [ "$WRAP" != fpga ] && { echo "WRAP=$WRAP needs the ASIC core (asic or asic-sram)"; exit 2; }
 # TB_SHAPE="M,K,N" replaces the testbench's 64,64,64 (golden model follows)
 TB_SHAPE=${TB_SHAPE:-}
 SHAPE_TAG=""
@@ -37,7 +47,9 @@ if [ -n "$TB_SHAPE" ]; then
     IFS=, read -r TM TK TN <<< "$TB_SHAPE"
     SHAPE_TAG="_M${TM}K${TK}N${TN}"
 fi
-BUILD=$KIT/sim/build_system_$VARIANT$SHAPE_TAG
+WRAP_TAG=""
+[ "$WRAP" != fpga ] && WRAP_TAG="_axi$WRAP"
+BUILD=$KIT/sim/build_system_$VARIANT$WRAP_TAG$SHAPE_TAG
 mkdir -p "$BUILD"
 
 # Icarus (vvp) aborts with "of_JOIN_DETACH ... wt_context" on fork/join_none
@@ -56,8 +68,13 @@ fi
 grep -q "P_WEIGHT_BUFFER_DEPTH($TB_W_DEPTH)" "$BUILD/tb_icarus.sv" \
     || { echo "could not set the weight buffer depth in the testbench copy"; exit 1; }
 
-COMMON=( "$BUILD/tb_icarus.sv" "$REPO/rtl/GEMM_top.v" "$REPO"/axi_ip/*.v )
 ASIC_RTL=( "$KIT"/rtl_asic/*.v )       # includes GEMM_core.v, Signed_adder.v, Right_shifter.v
+case "$WRAP" in
+  fpga) COMMON=( "$BUILD/tb_icarus.sv" "$REPO/rtl/GEMM_top.v" "$REPO"/axi_ip/*.v ); WRAP_DEFS=() ;;
+  thin) COMMON=( "$BUILD/tb_icarus.sv" "$KIT"/rtl_asic/axi/*.v ); WRAP_DEFS=( -DGEMM_AXIS_REG=0 ) ;;
+  reg)  COMMON=( "$BUILD/tb_icarus.sv" "$KIT"/rtl_asic/axi/*.v ); WRAP_DEFS=( -DGEMM_AXIS_REG=1 ) ;;
+esac
+echo "AXI wrapper: $WRAP"
 DEFS=()
 
 find_sram_model() {
@@ -120,7 +137,7 @@ PY
   *) echo "usage: $0 asic|asic-sram|orig [repo]"; exit 2 ;;
 esac
 
-iverilog -g2012 "${DEFS[@]}" -I "$KIT/rtl_asic" -o "$BUILD/system.vvp" "${SRC[@]}"
+iverilog -g2012 "${DEFS[@]}" "${WRAP_DEFS[@]}" -I "$KIT/rtl_asic" -o "$BUILD/system.vvp" "${SRC[@]}"
 ( cd "$BUILD" && vvp -n system.vvp > system.log )
 grep -E "OVERALL (PASS|FAIL)" "$BUILD/system.log" || echo "no OVERALL line - see $BUILD/system.log"
 if [ "$VARIANT" = asic-sram ]; then

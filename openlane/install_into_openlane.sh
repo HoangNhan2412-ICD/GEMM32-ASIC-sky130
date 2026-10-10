@@ -31,10 +31,16 @@ python3 "$KIT/openlane/gen_core_files.py" --pe-area "$PE_AREA" --out "$KIT/openl
     ${CORE_ARGS[@]+"${CORE_ARGS[@]}"} ${CORE_GEN_ARGS:-} > "$KIT/openlane/designs/gemm_core/floorplan.txt" \
     || { cat "$KIT/openlane/designs/gemm_core/floorplan.txt"; exit 1; }
 
+# the AXI shell measurement run (rtl_asic/axi without the core)
+python3 "$KIT/openlane/gen_axi_files.py" --out "$KIT/openlane/designs"
+
 cp "$KIT/openlane/designs/gemm_common.tcl" "$OL/designs/"
-for d in gemm_pe gemm_row gemm_array gemm_core; do
+for d in gemm_pe gemm_row gemm_array gemm_core gemm_axi_shell; do
     mkdir -p "$OL/designs/$d/src"
     cp "$KIT"/openlane/designs/$d/* "$OL/designs/$d/" 2>/dev/null || true
     cp "$KIT"/rtl_asic/*.v "$KIT"/rtl_asic/*.vh "$OL/designs/$d/src/"
 done
-echo "installed gemm_pe, gemm_row, gemm_array, gemm_core into $OL/designs"
+# AXI wrapper sources go flat into src/ next to the rest (no name clashes:
+# GEMM_top.v, GemmAxiShell.v, AxiLiteControlRegs.v, AxisSkidBuffer.v)
+cp "$KIT"/rtl_asic/axi/*.v "$OL/designs/gemm_axi_shell/src/"
+echo "installed gemm_pe, gemm_row, gemm_array, gemm_core, gemm_axi_shell into $OL/designs"

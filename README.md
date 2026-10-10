@@ -33,12 +33,18 @@ kết quả và lỗi hay gặp: HUONGDAN.md.
     openlane/run_flow.sh core       # khoảng 7-9,5 giờ, cần 16 GB RAM và 40 GB ổ trống
     openlane/run_flow.sh core-gls   # mô phỏng gate-level netlist cuối
 
+AXI accelerator IP (core bọc AXI4-Lite + 3 cổng AXI4-Stream, cùng register map với bản KV260; HUONGDAN.md mục 8):
+
+    openlane/run_flow.sh axi-sim    # skid buffer + testbench gốc, wrapper thin và reg
+    openlane/run_flow.sh axi-shell  # harden riêng phần AXI, bảng overhead so với core
+    openlane/run_flow.sh axi-gls    # GEMM_top (reg) bọc netlist cuối của core
+
 Mỗi tầng chỉ chạy khi tầng trước đã qua. Kết quả ghi vào openlane/LOG.md,
 GDS nằm ở ~/OpenLane/designs/gemm_core/runs/<tag>/results/final/gds/.
 
 ## Thư mục
 
-    rtl_asic/   RTL cho ASIC
+    rtl_asic/   RTL cho ASIC (rtl_asic/axi: wrapper AXI của IP)
     sim/        so sánh với RTL FPGA, mô phỏng gate-level
     openlane/   run_flow.sh và cấu hình từng tầng
     tools/      đọc log, kiểm tra DRC quanh macro, phân tích antenna, timing và công suất

@@ -180,3 +180,92 @@ giảm nghẽn, không phải đổi seed.
 Detailed route còn lỗi với mọi seed: lỗi ở cùng một chỗ qua nhiều seed là lỗi hình học. Xem vùng quanh lỗi:
 
     python3 tools/def_window.py <def> <run>/tmp/merged.nom.lef <x> <y> 12 <net...>
+
+## 8. AXI accelerator IP (GEMM_top)
+
+Phần này biến core thành một IP có giao tiếp chuẩn: AXI4-Lite để điều khiển, ba cổng AXI4-Stream 256 bit
+(feature vào, weight vào, result ra). Core giữ nguyên. Bản KV260 vốn đã là một AXI IP như vậy (`rtl/GEMM_top.v`
+và `axi_ip/` của repo gốc), nên ở đây chỉ chép wrapper đó sang `rtl_asic/axi/`, sửa cho hợp ASIC, rồi đo phần
+nó tốn thêm.
+
+    rtl_asic/axi/GEMM_top.v            top của IP, cùng tên, cổng, tham số và register map với bản KV260
+    rtl_asic/axi/GemmAxiShell.v        mọi thứ trừ core: ResetSync, thanh ghi AXI4-Lite, cờ busy/done, 3 cổng AXIS
+    rtl_asic/axi/AxiLiteControlRegs.v  thanh ghi 0x00-0x0C, handshake như template Xilinx của bản KV260
+    rtl_asic/axi/AxisSkidBuffer.v      register slice hai ô cho một luồng valid/ready
+
+Register map giữ nguyên nên driver KV260 (FPGA_GEMM.cpp) và testbench gốc dùng được ngay. Khác bản KV260 ở
+hai chỗ. Thứ nhất, thanh ghi 0x04-0x0C chỉ lưu số bit core dùng (9, 5, 5), bit cao đọc ra 0. Phần mềm ghi giá
+trị hợp lệ thì đọc lại vẫn đúng như cũ. Thứ hai, có ResetSync trên S_AXI_ARESETN (bản FPGA có proc_sys_reset
+lo việc này).
+
+Hai biến thể cổng stream, chọn bằng `GEMM_AXIS_REG` trong gemm_asic_cfg.vh (mặc định 1):
+
+| | thin (0) | reg (1) |
+|---|---|---|
+| Cổng AXIS | nối thẳng vào core như bản KV260 | qua AxisSkidBuffer, mọi cổng ra/vào từ flop |
+| TREADY | tổ hợp từ core và từ TSTRB | ra từ flop |
+| Độ trễ thêm | 0 | 1 chu kỳ mỗi luồng, thông lượng vẫn 1 beat/chu kỳ |
+| Timing ở cổng | bằng timing cổng của core (core_v11 đang miễn) | ngắn, không cần miễn |
+
+Beat có TSTRB không đủ byte (driver KV260 không bao giờ gửi) không bao giờ vào core, và luồng dừng luôn ở đó
+cho tới khi reset, như bản KV260. Khác ở chỗ: với thin, TREADY ở mức thấp nên master vẫn giữ beat; với reg,
+slice đã nhận beat đó rồi mới dừng. Cả hai trường hợp job đều không xong. Cờ busy/done lấy theo handshake ở
+cổng của IP, để "done" nghĩa là beat kết quả cuối đã ra khỏi IP chứ không chỉ rời core. TREADY của reg ở mức
+thấp suốt lúc reset và một chu kỳ sau đó, vì reset bên trong nhả muộn hơn cổng hai chu kỳ (ResetSync).
+
+### Chạy
+
+| Lệnh | Làm gì | Dấu hiệu PASS | Thời gian |
+|---|---|---|---|
+| `openlane/run_flow.sh axi-sim` | Test riêng skid buffer; testbench gốc với thin, reg, reg + model OpenRAM (3 kích thước) | `AXI IP RTL: ALL PASS` | chưa kiểm, ước 10 phút |
+| `openlane/run_flow.sh axi-shell` | Harden riêng GemmAxiShell (thin, reg), mỗi biến thể hai run (đo clock latency rồi chạy thật), đo công suất, in bảng overhead so với core | các run sạch DRC/LVS/antenna, có bảng | chưa kiểm |
+| `openlane/run_flow.sh axi-gls` | Testbench gốc trên GEMM_top (reg) bọc netlist cuối của core, row gate-level | OVERALL PASS | khoảng 6 phút một kích thước |
+
+Chạy riêng phần RTL không cần OpenLane: `sim/run_axi.sh`. Chọn wrapper cho các script cũ bằng biến WRAP:
+
+    WRAP=thin sim/run_system.sh asic          # hoặc reg; fpga (mặc định) là wrapper của repo KV260
+    WRAP=reg ROW=gl sim/run_gls.sh ~/OpenLane/designs/gemm_core/runs/core_v11
+
+Điều mong đợi ở axi-sim: thin trùng chu kỳ từng sự kiện kết quả với RTL KV260, vì logic giống hệt. reg ra cùng
+dãy kết quả, trễ hơn vài chu kỳ; script in khoảng lệch. Testbench gốc chặn result 1/7 chu kỳ và có khoảng trống
+ở hai luồng vào, nên skid buffer được thử cả lúc đầy lẫn lúc rỗng. tb_axis_skid.v thử thêm valid/ready ngẫu
+nhiên 80 000 beat.
+
+### Đọc bảng overhead
+
+axi-shell ghi bảng vào openlane/logs/axi_overhead_<thời điểm>.md (tools/axi_overhead.py). Các cột là core_v11,
+shell thin, shell reg, và shell tính theo phần trăm của core. Cần báo cáo công suất vectorless của core
+(`tools/power.sh <run core>` ghi reports/power/vectorless.design.rpt). Chưa có thì cột công suất của core để
+trống.
+
+- Diện tích: số cell sky130_fd_sc_hd sau synthesis nhân với diện tích từng cell trong liberty tt (script tự tìm
+  dưới $PDK_ROOT, ~/.ciel, ~/.volare, hoặc `--lib`). Macro row và SRAM không bao giờ lọt vào con số này. Die
+  của run shell do ~1780 chân quyết định nên không có nghĩa. Dòng "placed area" (trước khi chèn filler) chia
+  cho die core_v11 là phần die IP tốn thêm nếu đặt shell sát core.
+- Timing: WNS setup và hold ở cả ba corner của chính shell, với ngân sách cổng 30 % chu kỳ ở cả hai phía
+  (GEMM_SHELL_IO_PCT trong config). Độ trễ ở cổng tính theo clock latency của chính shell, đo ở run hiệu chỉnh
+  shell_<biến thể>_cal (cùng cách core.sdc làm với core). Không làm vậy thì mọi input của reg đều vi phạm hold
+  bằng đúng latency, và resizer chèn delay cell vào cả ~560 input, làm phồng diện tích lẫn công suất. Dòng
+  "violating setup paths at a port" cho thấy thin và reg khác nhau ở cổng.
+- Công suất: OpenSTA activity mặc định ở cả hai bên, cùng cách với con số 2,89 W của core. Con số 1,53 W của
+  core (VCD) được in để tham khảo. Shell chưa có số theo VCD.
+
+Giới hạn của cách đo này: shell được harden riêng nên cây clock của nó không cân với cây clock của core, và
+path giữa shell với core chưa được phân tích thật. Muốn có timing của cả IP thì cần bước 3 bên dưới.
+
+### Bước 3 (chưa làm): chạy phẳng GEMM_top
+
+Cho ra một GDS IP hoàn chỉnh: chạy lại core flow với top là GEMM_top, khoảng 9,5 giờ như core_v11. Những chỗ
+cần sửa, đã đếm trên code hiện tại:
+
+- gen_core_files.py: tên chân theo AXI (`feature_axis_tdata` thay `i_feature_data`...), thêm 3 x 32 chân TSTRB
+  và 96 chân AXI4-Lite ở nhóm cfg/clk, tên macro trong macro.cfg có thêm tiền tố `u_gemm_accelerator.`
+- config.tcl và core.sdc: DESIGN_NAME, VERILOG_FILES, CLOCK_PORT S_AXI_ACLK, false path cho S_AXI_ARESETN;
+  cfg_shift_mcp.sdc tìm net `r_cfg_shift*` ở top, sau khi flatten phải tìm theo tên có tiền tố
+- run_flow.sh có 63 chỗ ghi cứng gemm_core/GemmAccelerator; core_full.tcl, resume.tcl, route_signoff.tcl,
+  keep_rows_clear.tcl, preflight.tcl cũng có. Nên làm design riêng gemm_axi thay vì sửa gemm_core, để không
+  phá flow core đang sạch
+- Với reg, các cổng AXIS đều ra/vào từ flop, nên bỏ được `--waive-io-timing` và đặt ngân sách cổng thật
+
+Nên chạy axi-sim, axi-shell, axi-gls trước. Số overhead ở bước 2 đủ cho báo cáo; bước 3 cần khi muốn nộp
+một IP có GDS hoàn chỉnh hoặc muốn số timing của cả IP.

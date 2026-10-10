@@ -13,6 +13,10 @@
 #         BUILD=dir                build directory (default sim/build_gls)
 #         EXTRA_V="a.v b.v"        extra Verilog compiled with the testbench
 #                                  (e.g. a module that controls $dumpvars)
+#         WRAP=fpga (default) | thin | reg
+#                                  AXI wrapper around the core netlist: the KV260
+#                                  GEMM_top + axi_ip, or rtl_asic/axi/GEMM_top.v
+#                                  with GEMM_AXIS_REG=0 / 1 (see run_system.sh)
 #
 # Models: sky130_fd_sc_hd functional models (-DFUNCTIONAL -DUNIT_DELAY=#1:
 # 1 ns clock-to-Q, zero-delay logic, fine at the 10 ns testbench clock), the
@@ -26,7 +30,9 @@ OL=${OL:-$HOME/OpenLane}
 RUN=${1:-$OL/designs/gemm_core/runs/core_v1}
 REPO=${2:-${REPO:-$KIT/../GEMM_32x32_KV260-main}}
 ROW=${ROW:-rtl}
-BUILD=${BUILD:-$KIT/sim/build_gls}
+WRAP=${WRAP:-fpga}
+case "$WRAP" in fpga|thin|reg) ;; *) echo "WRAP must be fpga, thin or reg"; exit 2 ;; esac
+if [ "$WRAP" = fpga ]; then BUILD=${BUILD:-$KIT/sim/build_gls}; else BUILD=${BUILD:-$KIT/sim/build_gls_axi$WRAP}; fi
 mkdir -p "$BUILD"
 
 pdk_dir() {
@@ -120,9 +126,15 @@ PY
 
 EF=(); [ -f "$P/libs.ref/sky130_fd_sc_hd/verilog/sky130_ef_sc_hd.v" ] && EF=("$P/libs.ref/sky130_fd_sc_hd/verilog/sky130_ef_sc_hd.v")
 echo "compiling (PDK models: $SC)"
-iverilog -g2012 -DFUNCTIONAL -DUNIT_DELAY=#1 -DGEMM_DP_RESET=0 "${PWR[@]}" -I "$KIT/rtl_asic" \
+case "$WRAP" in
+  fpga) WRAPSRC=( "$BUILD/GEMM_top.v" "$REPO"/axi_ip/*.v ); WRAPDEF=() ;;
+  thin) WRAPSRC=( "$KIT"/rtl_asic/axi/*.v "$KIT/rtl_asic/ResetSync.v" ); WRAPDEF=( -DGEMM_AXIS_REG=0 ) ;;
+  reg)  WRAPSRC=( "$KIT"/rtl_asic/axi/*.v "$KIT/rtl_asic/ResetSync.v" ); WRAPDEF=( -DGEMM_AXIS_REG=1 ) ;;
+esac
+echo "AXI wrapper: $WRAP"
+iverilog -g2012 -DFUNCTIONAL -DUNIT_DELAY=#1 -DGEMM_DP_RESET=0 "${PWR[@]}" "${WRAPDEF[@]}" -I "$KIT/rtl_asic" \
     -o "$BUILD/gls.vvp" \
-    "$BUILD/tb.sv" "$BUILD/GEMM_top.v" "$REPO"/axi_ip/*.v \
+    "$BUILD/tb.sv" "${WRAPSRC[@]}" \
     "$BUILD/core_gl.v" "${ROWSRC[@]}" "$BUILD/sram_model.v" \
     "$SC/primitives.v" "$SC/sky130_fd_sc_hd.v" "${EF[@]}" ${EXTRA_V:-}
 echo "simulating - gate level, this takes a while"

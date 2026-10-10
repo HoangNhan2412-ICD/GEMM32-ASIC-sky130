@@ -13,6 +13,9 @@
 #   openlane/run_flow.sh core-status   progress of the running / last core run
 #   openlane/run_flow.sh core-check    judge an existing core run again (no OpenLane)
 #   openlane/run_flow.sh core-route    route + signoff again from the post-CTS layout of a run
+#   openlane/run_flow.sh axi-sim    AXI IP (rtl_asic/axi): skid-buffer test + original testbench, thin/reg
+#   openlane/run_flow.sh axi-shell  harden the AXI shell alone (thin, reg) + overhead table vs the core
+#   openlane/run_flow.sh axi-gls    original testbench on GEMM_top (reg) around the final core netlist
 #   openlane/run_flow.sh status     stages passed so far (openlane/LOG.md)
 #   Diagnostics: core-triage, core-probe, core-precheck, array-check (see the functions below).
 #
@@ -28,6 +31,7 @@
 #   DRT_SEEDS   detailed-router seeds tried in turn       [core: "42 7 23"]
 #   ANT_ECO     antenna ECO rounds after routing, 0 = off [3]
 #   ROW         core-gls: row model, rtl or gl (gate netlist of the row run) [gl]
+#   CORE_RUN    axi-shell / axi-gls: core run to compare with / simulate [last core run that passed]
 #   AUTO_COMMIT=1  git commit + tag the kit on every PASS
 # ---------------------------------------------------------------------------
 set -uo pipefail
@@ -843,6 +847,75 @@ st_core_gls() {   # original testbench on the final netlist, 3 matrix shapes, cy
 }
 
 # =========================================================================
+# AXI accelerator IP: GEMM_top (rtl_asic/axi) = GemmAxiShell + GemmAccelerator
+st_axi_sim() {
+    need sim
+    say "axi-sim: AXI IP RTL - skid buffer unit test, original testbench (thin, reg, reg + OpenRAM, 3 shapes)"
+    local out=$HERE/logs/axi_sim_$STAMP; mkdir -p "$out"
+    if "$KIT/sim/run_axi.sh" "$REPO" 2>&1 | tee "$out/run_axi.log"; [ "${PIPESTATUS[0]}" -eq 0 ]; then
+        pass "sim/run_axi.sh: ALL PASS"
+    else fail "sim/run_axi.sh (see ${out#"$KIT"/}/run_axi.log)"; fi
+    cp "$KIT"/sim/build_axi/cycles_*.txt "$out/" 2>/dev/null || true
+    NOTE="logs in ${out#"$KIT"/}"
+    finish axi-sim
+}
+
+st_axi_shell() {
+    need axi-sim
+    say "axi-shell: GemmAxiShell alone, thin and reg - what the AXI interface costs"
+    ol_patches || { fail "patch OpenLane scripts"; finish axi-shell; }
+    local d=$OL/designs/gemm_axi_shell v r
+    python3 "$HERE/gen_axi_files.py" --out "$HERE/designs" || { fail "gen_axi_files.py"; finish axi-shell; }
+    # only this design is copied (install_into_openlane.sh would also regenerate the core floorplan)
+    mkdir -p "$d/src"
+    cp "$HERE/designs/gemm_common.tcl" "$OL/designs/"
+    cp "$HERE"/designs/gemm_axi_shell/* "$d/"
+    cp "$KIT"/rtl_asic/*.v "$KIT"/rtl_asic/*.vh "$KIT"/rtl_asic/axi/*.v "$d/src/"
+    for v in thin reg; do
+        r=0; [ "$v" = reg ] && r=1
+        echo "set ::env(GEMM_AXIS_REG) $r   ;# written by run_flow.sh axi-shell" > "$d/variant.tcl"
+        # 1) calibration run with ideal outside clocks, only to measure the shell's clock latency
+        rm -f "$d/clk_latency.tcl"
+        ol_run gemm_axi_shell "shell_${v}_cal"
+        if python3 "$KIT/tools/clock_latency.py" "$RUNDIR" "$d/clk_latency.tcl" > "$HERE/logs/axi_shell_lat_${v}_$STAMP.log" 2>&1; then
+            pass "shell_$v clock latency: $(grep -o 'MIN) [0-9.]*\|MAX) [0-9.]*' "$d/clk_latency.tcl" | tr '\n' ' ')"
+        else fail "shell_$v: could not measure the clock latency (see openlane/logs/axi_shell_lat_${v}_$STAMP.log)"; rm -f "$d/clk_latency.tcl"; fi
+        # 2) the measured run: port delays from that latency (shell.sdc)
+        ol_run gemm_axi_shell "shell_$v"
+        check_run "$RUNDIR" --waive-io-timing
+        if "$KIT/tools/axi_shell_power.sh" "$RUNDIR" > "$HERE/logs/axi_shell_power_${v}_$STAMP.log" 2>&1; then
+            pass "shell_$v power: $(grep -E '^Total' "$RUNDIR/reports/power/vectorless.design.rpt" | awk '{print $5" W"}')"
+        else fail "shell_$v power (see openlane/logs/axi_shell_power_${v}_$STAMP.log)"; fi
+    done
+    rm -f "$d/variant.tcl" "$d/clk_latency.tcl"
+    local core=${CORE_RUN:-$(core_best_run)} md=$HERE/logs/axi_overhead_$STAMP.md
+    [ -f "$core/reports/power/vectorless.design.rpt" ] \
+        || echo "  (no vectorless power report in ${core#"$OL"/} yet - run: tools/power.sh $core)"
+    if python3 "$KIT/tools/axi_overhead.py" "$core" "$d/runs/shell_thin" "$d/runs/shell_reg" --md "$md"; then
+        pass "overhead table: ${md#"$KIT"/}"
+    else fail "tools/axi_overhead.py"; fi
+    NOTE="overhead table ${md#"$KIT"/}"
+    finish axi-shell
+}
+
+st_axi_gls() {
+    need axi-sim
+    local core=${CORE_RUN:-$(core_best_run)} shape tag out=$HERE/logs/axi_gls_$STAMP
+    mkdir -p "$out"
+    say "axi-gls: GEMM_top (reg) RTL around the final netlist of ${core##*/}, rows gate-level"
+    # AXI_GLS_SHAPES="8,32,544 16,992,32" adds the other two shapes (~10 and ~22 min more)
+    for shape in "" ${AXI_GLS_SHAPES:-}; do
+        tag=${shape:+_M$(echo "$shape" | awk -F, '{print $1"K"$2"N"$3}')}
+        if WRAP=reg ROW=${ROW:-gl} TB_SHAPE="$shape" BUILD="$KIT/sim/build_gls_axireg$tag" OL=$OL \
+               "$KIT/sim/run_gls.sh" "$core" "$REPO" > "$out/gls$tag.log" 2>&1; then
+            pass "GEMM_top reg + ${core##*/}${shape:+ ($shape)}: OVERALL PASS, $(wc -l < "$KIT/sim/build_gls_axireg$tag/cycles_gls.txt") result events"
+        else fail "GEMM_top reg + ${core##*/}${shape:+ ($shape)} (see ${out#"$KIT"/}/gls$tag.log)"; fi
+    done
+    NOTE="${core##*/}, logs in ${out#"$KIT"/}"
+    finish axi-gls
+}
+
+# =========================================================================
 case "${1:-}" in
     sim)   st_sim ;;
     pe)    st_pe ;;
@@ -862,6 +935,9 @@ case "${1:-}" in
     core-check) need core-pre
                 if [ -n "${TAG:-}" ]; then RUNDIR=$OL/designs/gemm_core/runs/$TAG; else RUNDIR=$(core_best_run); fi
                 say "core-check: judge the existing run ${RUNDIR#"$OL"/} (no OpenLane)"; core_verdict ;;
+    axi-sim)    st_axi_sim ;;
+    axi-shell)  st_axi_shell ;;
+    axi-gls)    st_axi_gls ;;
     all)   "$0" sim && "$0" pe && "$0" row && "$0" array && "$0" core-sim && "$0" core-pre && "$0" core ;;
     status) cat "$LOG" ;;
     *) sed -n '2,/^# ----/p' "$0" | sed '$d'; exit 2 ;;

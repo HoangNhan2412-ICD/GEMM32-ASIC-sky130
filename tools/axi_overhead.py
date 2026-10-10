@@ -320,7 +320,9 @@ def main():
     windows = sorted({w for d in runs for w in d["pwr_vcd"]})
     for w in windows:
         cw = core["pwr_vcd"].get(w)
-        line(f"power from VCD, cycles {w.replace('_', '..')} (W)", cw,
+        c0, c1 = w.split("_")[:2]
+        how = ", STA without clock (NOCLK)" if w.endswith("_noclk") else ""
+        line(f"power from VCD, cycles {c0}..{c1}{how} (W)", cw,
              [d["pwr_vcd"].get(w) for d in shells], ".4g", cw)
 
     head = ["", f"core ({core['name']})"] + [d["name"] for d in shells]

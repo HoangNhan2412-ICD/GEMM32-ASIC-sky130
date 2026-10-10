@@ -293,16 +293,20 @@ core>` cho vectorless, `tools/power.sh <run core> --vcd 2300 3200` cho VCD). Ch�
 - Antenna: các run shell còn vài chục chân vi phạm (10/10: thin 6, reg 56, lean 38, lean_cg 12) dù đã có diode ở
   cổng và heuristic diode. Đây là run đo đạc nên chưa sửa tiếp; chúng không làm đổi diện tích hay công suất đáng kể.
   Bản IP nộp thật sẽ là bước 3, khi đó sửa antenna cùng với core.
-- Công suất, vectorless: OpenSTA activity mặc định ở cả hai bên, cùng cách với con số 2,89 W của core. OpenSTA
-  truyền activity qua clock gate theo activity mặc định của chân GATE, nên cách này cũng thấy phần lớn chỗ giảm của
-  bản _cg (10/10: lean 32,65 mW, lean_cg 6,91 mW). Con số theo hoạt động thật là dòng VCD.
+- Công suất, vectorless: OpenSTA activity mặc định ở cả hai bên, cùng cách với con số 2,89 W của core. Bản _cg thấp
+  hơn nhiều (10/10: lean 32,65 mW, lean_cg 6,91 mW): phần Combinational giảm vì hết mux enable, phần Sequential giảm
+  từ 9,3 xuống 2,2 mW với cùng 1158 flop, tức ở chế độ này OpenSTA có tính phần clock bị chặn. Con số theo hoạt động
+  thật là dòng VCD.
 - Công suất, VCD: chạy testbench gốc trên GEMM_top với netlist cuối của shell và RTL của core, lấy activity từng
-  net của shell, rồi OpenSTA tính như với core. Khác core ở hai điểm (tools/power/shell_power.tcl). Một: activity
-  của các cổng vào cũng lấy từ VCD. Core để cổng ở mức mặc định 0,1 lần đổi mỗi chu kỳ; shell gần như toàn logic
-  sát cổng (~1780 cổng), để mặc định thì cửa sổ đứng yên vẫn bị tính như có dữ liệu chạy qua. Hai: net có 0 lần đổi
-  được đặt 0,001 lần trong cả cửa sổ thay cho 0. Bản OpenSTA trong image OpenLane thay activity 0 trên net clock bằng
-  activity clock đầy đủ: lần đo đầu ngày 10/10, trong chu kỳ 2300..3200 cả bốn chân GCLK đều đứng yên mà flop sau
-  clock gate vẫn bị tính đúng bằng flop nối thẳng S_AXI_ACLK, còn ở cửa sổ 0..end (GCLK có đổi) thì được tính đúng.
+  net của shell, rồi OpenSTA tính như với core. Khác core một điểm: activity của các cổng vào cũng lấy từ VCD (shell
+  gần như toàn logic sát cổng; đo ngày 10/10 thì tổng chỉ đổi dưới 0,1 %).
+  Chỗ cần biết với bản _cg: trong chu kỳ 2300..3200 cả bốn chân GCLK đứng yên (0 lần đổi), vậy mà OpenSTA của image
+  OpenLane vẫn tính flop sau clock gate và net GCLK như đang nhận clock đủ mọi chu kỳ (flop sau gate tốn đúng bằng
+  flop nối thẳng S_AXI_ACLK; đặt activity rất nhỏ thay cho 0 cũng không đổi). Ở cửa sổ 0..end, khi GCLK có đổi, nó
+  tính đúng (flop sau gate tốn khoảng 1/10). Nên số 2300..3200 của bản _cg theo cách này là cận trên. Cách đo thay
+  thế: `NOCLK=1 tools/axi_shell_power.sh <run> --vcd C0 C1` xoá clock trong STA để mọi chân, kể cả chân clock, lấy
+  activity từ VCD (báo cáo vcd_C0_C1_noclk, dòng riêng trong bảng). Cách này chỉ dùng được khi kiểm tra trên một
+  biến thể không có clock gating cho ra gần cùng số với cách thường.
   Có hai cửa sổ. Chu kỳ 2300..3200 là cửa sổ core_v11 đã dùng (pha
   tính của job 2; theo log testbench, không có beat nào qua cả ba cổng stream trong khoảng này), nên ô `(x %)` ở dòng này so cùng một khoảng thời gian; cộng số của shell với số của core là
   công suất của cả IP trong khoảng đó. Cửa sổ 0..end là cả testbench (nạp dữ liệu, tính, đọc kết quả của hai job);

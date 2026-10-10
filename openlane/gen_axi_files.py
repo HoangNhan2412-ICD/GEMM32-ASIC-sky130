@@ -7,7 +7,10 @@ The shell alone is a pin-bound block: ~970 ports on the AXI side and ~810
 on the core side, a few thousand cells at most. Its die size means nothing
 (in the IP the shell sits in the margin of the core's die); what the run is
 for is the cell area, flop count, timing and power of the shell itself.
-So the die is just tall enough for the pins and narrow:
+So the die is just tall enough for the pins. Width 600 um (first runs: 300):
+at 300 the 1613 flops of "reg" were pulled against the 971 West pins and
+global routing overflowed in the first 100 um (GRT-0119), while the die as
+a whole was 17 % used.
 
     West  (bottom -> top): S_AXI_ACLK, S_AXI_ARESETN, AXI4-Lite,
                            feature AXIS, weight AXIS, result AXIS
@@ -16,7 +19,7 @@ So the die is just tall enough for the pins and narrow:
                            the West edge (empty slots stand in for TSTRB), so
                            every data bit crosses the block in a straight line.
 
-usage: gen_axi_files.py [--n 32] [--dw 8] [--height 1500] [--width 300] [--out designs]
+usage: gen_axi_files.py [--n 32] [--dw 8] [--height 1500] [--width 600] [--out designs]
 """
 import argparse
 import os
@@ -45,7 +48,7 @@ def main():
     ap.add_argument("--n", type=int, default=32)
     ap.add_argument("--dw", type=int, default=8)
     ap.add_argument("--height", type=float, default=1500.0)
-    ap.add_argument("--width", type=float, default=300.0)
+    ap.add_argument("--width", type=float, default=600.0)
     ap.add_argument("--out", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "designs"))
     a = ap.parse_args()
     w = a.n * a.dw

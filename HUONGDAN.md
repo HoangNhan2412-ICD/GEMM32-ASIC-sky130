@@ -239,10 +239,13 @@ shell thin, shell reg, và shell tính theo phần trăm của core. Cần báo 
 trống.
 
 - Diện tích: số cell sky130_fd_sc_hd sau synthesis nhân với diện tích từng cell trong liberty tt (script tự tìm
-  dưới $PDK_ROOT, ~/.ciel, ~/.volare, hoặc `--lib`). Macro row và SRAM không bao giờ lọt vào con số này. Die
-  của run shell do ~1780 chân quyết định nên không có nghĩa. Dòng "placed area" (trước khi chèn filler) chia
-  cho die core_v11 là phần die IP tốn thêm nếu đặt shell sát core.
-- Timing: WNS setup và hold ở cả ba corner của chính shell, với ngân sách cổng 30 % chu kỳ ở cả hai phía
+  dưới $PDK_ROOT, ~/.ciel, ~/.volare, hoặc `--lib`). Macro SRAM không bao giờ lọt vào con số này. Phía core được
+  tính cả cell bên trong 32 row macro (lấy từ run row_v1), vì phần lớn logic của core nằm trong row; cell ở top
+  core thôi chỉ là một phần nhỏ, so với nó thì phần trăm overhead bị phóng to nhiều lần. Die của run shell do
+  ~1780 chân quyết định nên không có nghĩa (600 x 1500 um; bản 300 um đầu tiên nghẽn route ở mép Tây với reg).
+  Dòng "placed area" (trước khi chèn filler) chia cho die core_v11 là phần die IP tốn thêm nếu đặt shell sát core.
+- Timing: slack setup và hold ở cả ba corner, tách đường bên trong khối với đường chạm cổng. Với core_v11, đường
+  chạm cổng đang được miễn (chưa có pad ring) nên chỉ đọc các dòng "inside the block". Shell dùng ngân sách cổng 30 % chu kỳ ở cả hai phía
   (GEMM_SHELL_IO_PCT trong config). Độ trễ ở cổng tính theo clock latency của chính shell, đo ở run hiệu chỉnh
   shell_<biến thể>_cal (cùng cách core.sdc làm với core). Không làm vậy thì mọi input của reg đều vi phạm hold
   bằng đúng latency, và resizer chèn delay cell vào cả ~560 input, làm phồng diện tích lẫn công suất. Dòng

@@ -43,7 +43,22 @@ set ::env(DESIGN_IS_CORE)   0
 set ::env(FP_PDN_CORE_RING) 0
 set ::env(RT_MAX_LAYER)     "met4"
 set ::env(FP_PIN_ORDER_CFG) $::env(DESIGN_DIR)/pin_order.cfg
-set ::env(PL_TARGET_DENSITY) 0.50
+# spread the cells: at 0.50 (first runs) the skid buffers of "reg" sat in a
+# dense band against the West pins and global routing overflowed there
+set ::env(PL_TARGET_DENSITY) 0.30
+# small leftover overflow goes to detailed routing (as in gemm_core), which
+# reports real shorts if it cannot fix it - QUIT_ON_TR_DRC stays on
+set ::env(GRT_ALLOW_CONGESTION) 1
+
+# antenna: the AXIS ports of "thin" are ~600 um wires straight across the
+# die, and every input port drives gates through such a wire (first thin run:
+# 305 pins). Diodes on the input ports + the heuristic diodes (fine here:
+# no congestion problem on a 17 %-used die) + more repair rounds in the
+# global route. DIODE_ON_PORTS needs RUN_HEURISTIC_DIODE_INSERTION.
+set ::env(RUN_HEURISTIC_DIODE_INSERTION) 1
+set ::env(DIODE_ON_PORTS)                "in"
+set ::env(GRT_REPAIR_ANTENNAS)           1
+set ::env(GRT_ANT_ITERS)                 10
 
 # finish the run and report, a timing miss is a result here
 set ::env(QUIT_ON_TIMING_VIOLATIONS) 0

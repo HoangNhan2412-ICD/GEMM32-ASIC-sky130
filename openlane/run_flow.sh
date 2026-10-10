@@ -891,7 +891,8 @@ st_axi_shell() {
     local core=${CORE_RUN:-$(core_best_run)} md=$HERE/logs/axi_overhead_$STAMP.md
     [ -f "$core/reports/power/vectorless.design.rpt" ] \
         || echo "  (no vectorless power report in ${core#"$OL"/} yet - run: tools/power.sh $core)"
-    if python3 "$KIT/tools/axi_overhead.py" "$core" "$d/runs/shell_thin" "$d/runs/shell_reg" --md "$md"; then
+    if python3 "$KIT/tools/axi_overhead.py" "$core" "$d/runs/shell_thin" "$d/runs/shell_reg" --md "$md" \
+           --row "${ROW_RUN:-$OL/designs/gemm_row/runs/row_v1}"; then
         pass "overhead table: ${md#"$KIT"/}"
     else fail "tools/axi_overhead.py"; fi
     NOTE="overhead table ${md#"$KIT"/}"

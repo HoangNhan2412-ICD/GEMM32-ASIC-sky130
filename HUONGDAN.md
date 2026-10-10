@@ -217,8 +217,8 @@ Chân `irq` = IRQ_STATUS AND IRQ_ENABLE, mức cao, ra từ flop. Thanh ghi 0x04
 FPGA có proc_sys_reset lo việc này).
 
 Biến thể cổng stream, chọn bằng `GEMM_AXIS_REG` và `GEMM_AXIS_CG` trong gemm_asic_cfg.vh. Mặc định của IP là lean
-có clock gating (REG=2, CG=1), chọn sau lần axi-shell ngày 10/10: diện tích bằng khoảng một nửa và công suất khoảng
-một phần năm so với reg, mà phía ra vẫn toàn flop.
+có clock gating (REG=2, CG=1), chọn sau lần axi-shell ngày 10/10: diện tích bằng khoảng một nửa reg, công suất thấp
+hơn reg ở mọi cách đo, mà phía ra vẫn toàn flop.
 
 | | thin (REG=0) | reg (REG=1) | lean (REG=2) |
 |---|---|---|---|
@@ -282,11 +282,13 @@ core>` cho vectorless, `tools/power.sh <run core> --vcd 2300 3200` cho VCD). Ch�
   bằng đúng latency, và resizer chèn delay cell vào cả ~560 input, làm phồng diện tích lẫn công suất. Latency đo
   ở corner typical và là một con số chung cho cả khối, nên slack ở cổng của corner Slowest có thể âm vài trăm ps
   (10/10: hold reg -0,29, lean_cg -0,56; setup reg -0,09, lean_cg -0,47 ns). Đó là do cách đặt ràng buộc, không phải
-  lỗi trong khối: slack bên trong khối dương ở mọi corner. lean_cg lệch nhiều nhất vì hai lẽ. Flop sau clock gate có
-  latency lớn hơn flop nối thẳng S_AXI_ACLK, nên một con số latency chung sai nhiều hơn (hold ở cổng, Typical còn
-  -0,08 ns). Còn tín hiệu enable của clock gate phải ổn định trước cạnh clock tại chân CLK của cell dlclkp, mà chân
-  này nhận clock sớm hơn các flop phía sau nó, nên đường từ cổng vào chân GATE có ít thời gian hơn (setup). Ở bước 3
-  (chạy phẳng GEMM_top) cây clock của shell và core được dựng chung thì hai con số này mới thật. Dòng "violating
+  lỗi trong khối: slack bên trong khối dương ở mọi corner. Hold của lean_cg lệch nhiều nhất vì flop sau clock gate
+  có latency lớn hơn flop nối thẳng S_AXI_ACLK, nên một con số latency chung sai nhiều hơn (Typical còn -0,08 ns; cả
+  hai đường hold xấu nhất đều từ chân feature_axis_tdata vào flop sau clock gate của feature slice).
+  Đường setup xấu nhất ở Slowest (-0,47 ns) đi từ flop r_ready ra cổng o_result_ready: ba slice có ba flop r_ready
+  giống hệt (cùng clock, reset, nhận hằng 1) nên Yosys gộp thành một flop, mang tên của feature slice, và flop đó cấp
+  TREADY cho cả ba. Đây là đường ra cổng phía core với ngân sách 3 ns, Typical vẫn +2,16 ns. Ở bước 3 (chạy phẳng
+  GEMM_top) cây clock của shell và core được dựng chung thì các con số ở cổng mới thật. Dòng "violating
   setup paths at a port" đếm theo báo cáo signoff ở corner Typical; ở đó cả bốn biến thể đều bằng 0.
 - Antenna: các run shell còn vài chục chân vi phạm (10/10: thin 6, reg 56, lean 38, lean_cg 12) dù đã có diode ở
   cổng và heuristic diode. Đây là run đo đạc nên chưa sửa tiếp; chúng không làm đổi diện tích hay công suất đáng kể.
@@ -295,8 +297,14 @@ core>` cho vectorless, `tools/power.sh <run core> --vcd 2300 3200` cho VCD). Ch�
   truyền activity qua clock gate theo activity mặc định của chân GATE, nên cách này cũng thấy phần lớn chỗ giảm của
   bản _cg (10/10: lean 32,65 mW, lean_cg 6,91 mW). Con số theo hoạt động thật là dòng VCD.
 - Công suất, VCD: chạy testbench gốc trên GEMM_top với netlist cuối của shell và RTL của core, lấy activity từng
-  net của shell, rồi OpenSTA tính như với core. Có hai cửa sổ. Chu kỳ 2300..3200 là cửa sổ core_v11 đã dùng (pha
-  tính của job 2), nên ô `(x %)` ở dòng này so cùng một khoảng thời gian; cộng số của shell với số của core là
+  net của shell, rồi OpenSTA tính như với core. Khác core ở hai điểm (tools/power/shell_power.tcl). Một: activity
+  của các cổng vào cũng lấy từ VCD. Core để cổng ở mức mặc định 0,1 lần đổi mỗi chu kỳ; shell gần như toàn logic
+  sát cổng (~1780 cổng), để mặc định thì cửa sổ đứng yên vẫn bị tính như có dữ liệu chạy qua. Hai: net có 0 lần đổi
+  được đặt 0,001 lần trong cả cửa sổ thay cho 0. Bản OpenSTA trong image OpenLane thay activity 0 trên net clock bằng
+  activity clock đầy đủ: lần đo đầu ngày 10/10, trong chu kỳ 2300..3200 cả bốn chân GCLK đều đứng yên mà flop sau
+  clock gate vẫn bị tính đúng bằng flop nối thẳng S_AXI_ACLK, còn ở cửa sổ 0..end (GCLK có đổi) thì được tính đúng.
+  Có hai cửa sổ. Chu kỳ 2300..3200 là cửa sổ core_v11 đã dùng (pha
+  tính của job 2; theo log testbench, không có beat nào qua cả ba cổng stream trong khoảng này), nên ô `(x %)` ở dòng này so cùng một khoảng thời gian; cộng số của shell với số của core là
   công suất của cả IP trong khoảng đó. Cửa sổ 0..end là cả testbench (nạp dữ liệu, tính, đọc kết quả của hai job);
   core không có số cho cửa sổ này nên ô core để trống, chỉ so các biến thể với nhau. Clock gating chỉ bớt công
   suất ở những chu kỳ một cổng stream không nạp beat; tỷ lệ chu kỳ đó ở hai cửa sổ khác nhau, nên phần bớt được ở

@@ -50,7 +50,8 @@
 // the two inputs + a skid buffer on the result (input TREADY combinational,
 // ~1/3 fewer flops). Override with +define+GEMM_AXIS_REG=n / SYNTH_DEFINES.
 // Default: lean + clock gating (axi-shell 2026-10-10: 0.43 % of the core's
-// std-cell area, about half the area and a fifth of the power of reg).
+// std-cell area, about half the area of reg and less power than reg in every
+// measurement: vectorless, VCD whole testbench, VCD compute window).
 `ifndef GEMM_AXIS_REG
 `define GEMM_AXIS_REG 2
 `endif

@@ -6,8 +6,8 @@ at 1, mapped to the driver pin of every net (std-cell outputs, ICG GCLK).
 Same output format as vcd2act.py, so tools/power/shell_power.tcl reads it the
 way power.tcl reads the core's:
   pin|port <name> <toggles> <duty>     plus header '# cycles N period_ps P window_ps T'
-Input ports are listed as 'port' lines; like power.tcl, shell_power.tcl only
-applies the 'pin' lines (ports keep OpenSTA's default input activity, as for the core)."""
+Input ports are listed as 'port' lines. shell_power.tcl applies both kinds (the core's
+power.tcl applies only 'pin' lines; the shell is mostly port-facing logic)."""
 import collections
 import re
 import sys

@@ -216,7 +216,9 @@ Chân `irq` = IRQ_STATUS AND IRQ_ENABLE, mức cao, ra từ flop. Thanh ghi 0x04
 5), bit cao đọc ra 0; phần mềm ghi giá trị hợp lệ thì đọc lại vẫn như cũ. Có ResetSync trên S_AXI_ARESETN (bản
 FPGA có proc_sys_reset lo việc này).
 
-Biến thể cổng stream, chọn bằng `GEMM_AXIS_REG` và `GEMM_AXIS_CG` trong gemm_asic_cfg.vh:
+Biến thể cổng stream, chọn bằng `GEMM_AXIS_REG` và `GEMM_AXIS_CG` trong gemm_asic_cfg.vh. Mặc định của IP là lean
+có clock gating (REG=2, CG=1), chọn sau lần axi-shell ngày 10/10: diện tích bằng khoảng một nửa và công suất khoảng
+một phần năm so với reg, mà phía ra vẫn toàn flop.
 
 | | thin (REG=0) | reg (REG=1) | lean (REG=2) |
 |---|---|---|---|
@@ -227,7 +229,9 @@ Biến thể cổng stream, chọn bằng `GEMM_AXIS_REG` và `GEMM_AXIS_CG` tro
 | Timing ở cổng | bằng timing cổng của core (core_v11 đang miễn) | ngắn | ngắn |
 
 `GEMM_AXIS_CG=1` (chỉ với reg, lean) đặt clock gate trước mỗi dãy flop dữ liệu: dãy nào không nạp beat thì không
-có cạnh clock. Hành vi giữ nguyên từng chu kỳ, chỉ bớt công suất clock. Lý do lean chỉ cần slice một ô ở phía
+có cạnh clock. Hành vi giữ nguyên từng chu kỳ. Ngoài công suất clock, nó còn bỏ được bộ mux enable trước mỗi flop dữ
+liệu (flop có enable được thay bằng flop thường), nên diện tích cũng nhỏ đi: lean 47 632 um², lean_cg 32 765 um².
+Lý do lean chỉ cần slice một ô ở phía
 vào: dữ liệu feature/weight đi thẳng vào chân ghi của SRAM, còn ready của core là phép so sánh bộ đếm trên flop
 (In_buffer.v), nên phía vào của core vốn gần như đã có thanh ghi. Phía ra đi qua bộ dịch tổ hợp nên giữ skid hai ô.
 
@@ -242,8 +246,8 @@ nhả muộn hơn cổng hai chu kỳ (ResetSync).
 
 | Lệnh | Làm gì | Dấu hiệu PASS | Thời gian |
 |---|---|---|---|
-| `openlane/run_flow.sh axi-sim` | Test riêng hai loại slice (có và không clock gating); test shell với model core cho thin, reg, reg+cg, lean, lean+cg (thanh ghi, ngắt, lỗi, JOB_CYCLES, dữ liệu dưới backpressure ngẫu nhiên); testbench gốc với thin, reg, reg+cg, lean, lean+cg, và lean+cg + model OpenRAM (3 kích thước) | `AXI IP RTL: ALL PASS` | lần đầu 5:27 (khi chỉ có thin, reg); giờ nhiều hơn, chưa đo |
-| `openlane/run_flow.sh axi-shell` | Harden riêng GemmAxiShell cho thin, reg, lean, lean_cg (`AXI_SHELL_VARIANTS` để đổi), mỗi biến thể hai run (đo clock latency rồi chạy thật); công suất vectorless và theo VCD (chu kỳ 2300-3200 như core, và cả testbench); in bảng overhead | các run sạch DRC/LVS, có bảng | lần 2 với 2 biến thể: 27 phút; 4 biến thể cộng VCD chắc gần 1 giờ |
+| `openlane/run_flow.sh axi-sim` | Test riêng hai loại slice (có và không clock gating); test shell với model core cho thin, reg, reg+cg, lean, lean+cg (thanh ghi, ngắt, lỗi, JOB_CYCLES, dữ liệu dưới backpressure ngẫu nhiên); testbench gốc với thin, reg, reg+cg, lean, lean+cg, và lean+cg + model OpenRAM (3 kích thước) | `AXI IP RTL: ALL PASS` | khoảng 2 phút |
+| `openlane/run_flow.sh axi-shell` | Harden riêng GemmAxiShell cho thin, reg, lean, lean_cg (`AXI_SHELL_VARIANTS` để đổi), mỗi biến thể hai run (đo clock latency rồi chạy thật); công suất vectorless và theo VCD (chu kỳ 2300-3200 như core, và cả testbench); in bảng overhead | các run sạch DRC/LVS, có bảng (antenna còn vài chục chân, xem dưới) | 1:10 cho 4 biến thể |
 | `openlane/run_flow.sh axi-gls` | Testbench gốc trên GEMM_top (mặc định lean + clock gating; `AXI_GLS_WRAP`, `AXI_GLS_CG` để đổi) bọc netlist cuối của core, row gate-level | OVERALL PASS | 5:50 một kích thước |
 
 Chạy riêng phần RTL không cần OpenLane: `sim/run_axi.sh`. Chọn wrapper cho các script cũ bằng biến WRAP:
@@ -276,11 +280,20 @@ core>` cho vectorless, `tools/power.sh <run core> --vcd 2300 3200` cho VCD). Ch�
   (GEMM_SHELL_IO_PCT trong config). Độ trễ ở cổng tính theo clock latency của chính shell, đo ở run hiệu chỉnh
   shell_<biến thể>_cal (cùng cách core.sdc làm với core). Không làm vậy thì mọi input của reg đều vi phạm hold
   bằng đúng latency, và resizer chèn delay cell vào cả ~560 input, làm phồng diện tích lẫn công suất. Latency đo
-  ở corner typical nên hold ở cổng của corner Slowest có thể âm vài trăm ps (lần chạy 2: reg -0,27 ns); đó là do
-  cách đặt ràng buộc, không phải lỗi trong khối. Dòng "violating setup paths at a port" cho thấy các biến thể khác
-  nhau ở cổng.
-- Công suất, vectorless: OpenSTA activity mặc định ở cả hai bên, cùng cách với con số 2,89 W của core. Cách này
-  coi mọi flop đều đổi trạng thái như nhau, nên không thấy được clock gating: bản _cg chỉ khác ở dòng VCD.
+  ở corner typical và là một con số chung cho cả khối, nên slack ở cổng của corner Slowest có thể âm vài trăm ps
+  (10/10: hold reg -0,29, lean_cg -0,56; setup reg -0,09, lean_cg -0,47 ns). Đó là do cách đặt ràng buộc, không phải
+  lỗi trong khối: slack bên trong khối dương ở mọi corner. lean_cg lệch nhiều nhất vì hai lẽ. Flop sau clock gate có
+  latency lớn hơn flop nối thẳng S_AXI_ACLK, nên một con số latency chung sai nhiều hơn (hold ở cổng, Typical còn
+  -0,08 ns). Còn tín hiệu enable của clock gate phải ổn định trước cạnh clock tại chân CLK của cell dlclkp, mà chân
+  này nhận clock sớm hơn các flop phía sau nó, nên đường từ cổng vào chân GATE có ít thời gian hơn (setup). Ở bước 3
+  (chạy phẳng GEMM_top) cây clock của shell và core được dựng chung thì hai con số này mới thật. Dòng "violating
+  setup paths at a port" đếm theo báo cáo signoff ở corner Typical; ở đó cả bốn biến thể đều bằng 0.
+- Antenna: các run shell còn vài chục chân vi phạm (10/10: thin 6, reg 56, lean 38, lean_cg 12) dù đã có diode ở
+  cổng và heuristic diode. Đây là run đo đạc nên chưa sửa tiếp; chúng không làm đổi diện tích hay công suất đáng kể.
+  Bản IP nộp thật sẽ là bước 3, khi đó sửa antenna cùng với core.
+- Công suất, vectorless: OpenSTA activity mặc định ở cả hai bên, cùng cách với con số 2,89 W của core. OpenSTA
+  truyền activity qua clock gate theo activity mặc định của chân GATE, nên cách này cũng thấy phần lớn chỗ giảm của
+  bản _cg (10/10: lean 32,65 mW, lean_cg 6,91 mW). Con số theo hoạt động thật là dòng VCD.
 - Công suất, VCD: chạy testbench gốc trên GEMM_top với netlist cuối của shell và RTL của core, lấy activity từng
   net của shell, rồi OpenSTA tính như với core. Có hai cửa sổ. Chu kỳ 2300..3200 là cửa sổ core_v11 đã dùng (pha
   tính của job 2), nên ô `(x %)` ở dòng này so cùng một khoảng thời gian; cộng số của shell với số của core là
@@ -295,6 +308,7 @@ path giữa shell với core chưa được phân tích thật. Muốn có timin
 Với bản _cg nên mở thêm log CTS của run (`logs/cts/*cts.log`, dòng `Clock net ... has N sinks`): mỗi clock gate
 phải có một dòng riêng cho net GCLK của nó. Nếu chỉ thấy net S_AXI_ACLK thì TritonCTS không dựng cây sau clock
 gate, net GCLK lớn (khoảng 258 flop) chỉ được resizer chèn buffer thường, và slack hold bên trong khối sẽ là chỗ lộ ra.
+Lần 10/10 TritonCTS dựng đủ: S_AXI_ACLK 132 sink, bốn net GCLK 257-258 sink mỗi net.
 
 ### Bước 3 (chưa làm): chạy phẳng GEMM_top
 

@@ -100,8 +100,16 @@ iverilog -g2012 -DFUNCTIONAL -DUNIT_DELAY=#1 -I "$KIT/rtl_asic" -o "$B/sim.vvp" 
     "$B/tb.sv" "$B/GEMM_top.v" "$B/shell_gl.v" "$B/vcd_window.v" \
     $(ls "$KIT"/rtl_asic/*.v) "$SC/primitives.v" "$SC/sky130_fd_sc_hd.v" "${EF[@]}"
 ( cd "$B" && vvp -n sim.vvp > sim.log )
-grep -E "OVERALL (PASS|FAIL)" "$B/sim.log" || { echo "no OVERALL line - see $B/sim.log"; exit 1; }
-grep -q "OVERALL PASS" "$B/sim.log" || { echo "testbench failed with the shell netlist - see $B/sim.log"; exit 1; }
+if [ "$C1" = end ]; then
+    grep -E "OVERALL (PASS|FAIL)" "$B/sim.log" || { echo "no OVERALL line - see $B/sim.log"; exit 1; }
+    grep -q "OVERALL PASS" "$B/sim.log" || { echo "testbench failed with the shell netlist - see $B/sim.log"; exit 1; }
+else
+    # stopped at cycle C1, before the testbench prints OVERALL (as tools/power.sh does for the
+    # core); the full check of the netlist is the "0 end" run. Here: window reached, no FAIL so far.
+    grep -q "^VCD_END" "$B/sim.log" || { echo "simulation did not reach cycle $C1 - see $B/sim.log"; exit 1; }
+    if grep -q "^FAIL" "$B/sim.log"; then echo "testbench reported FAIL before cycle $C1 - see $B/sim.log"; exit 1; fi
+    echo "window $C0..$C1 simulated, no FAIL from the testbench up to there"
+fi
 python3 "$KIT/tools/power/vcd2act_flat.py" "$B/$name.vcd" "$B/shell_gl.v" u_axi_shell "$OUT/$name.act"
 sta_power "$name" "$OUT/$name.act"
 rm -f "$B/$name.vcd"

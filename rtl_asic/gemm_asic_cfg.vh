@@ -49,13 +49,15 @@
 // AXIS port of the IP is registered. 2 = "lean", one-entry forward slices on
 // the two inputs + a skid buffer on the result (input TREADY combinational,
 // ~1/3 fewer flops). Override with +define+GEMM_AXIS_REG=n / SYNTH_DEFINES.
+// Default: lean + clock gating (axi-shell 2026-10-10: 0.43 % of the core's
+// std-cell area, about half the area and a fifth of the power of reg).
 `ifndef GEMM_AXIS_REG
-`define GEMM_AXIS_REG 1
+`define GEMM_AXIS_REG 2
 `endif
 // 1 = clock-gate the data banks of the stream slices (sky130 dlclkp ICG):
 // banks that are not loading get no clock. Only with GEMM_AXIS_REG 1 or 2.
 `ifndef GEMM_AXIS_CG
-`define GEMM_AXIS_CG 0
+`define GEMM_AXIS_CG 1
 `endif
 
 `endif

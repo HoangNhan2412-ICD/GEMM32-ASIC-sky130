@@ -16,9 +16,9 @@ source $::env(DESIGN_DIR)/sizes.tcl
 # GEMM_AXIS_REG: 0 = thin (KV260 adapters), 1 = reg (skid buffers),
 # 2 = lean (forward slices in, skid buffer out); GEMM_AXIS_CG: 1 = clock-gated
 # slice data banks (sky130 dlclkp). run_flow.sh writes variant.tcl before each
-# run; reg without clock gating if it is missing.
-set ::env(GEMM_AXIS_REG) 1
-set ::env(GEMM_AXIS_CG)  0
+# run; lean with clock gating (the IP default, gemm_asic_cfg.vh) if it is missing.
+set ::env(GEMM_AXIS_REG) 2
+set ::env(GEMM_AXIS_CG)  1
 if { [file exists $::env(DESIGN_DIR)/variant.tcl] } { source $::env(DESIGN_DIR)/variant.tcl }
 
 set ::env(DESIGN_NAME) "GemmAxiShell"

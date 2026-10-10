@@ -314,7 +314,7 @@ def main():
             line(f"{kind} worst slack at a port, {corner} (ns)",
                  core[key].get(corner, (None, None))[1],
                  [d[key].get(corner, (None, None))[1] for d in shells], ".2f")
-    rows.append(["violating setup paths at a port", "-"] +
+    rows.append(["violating setup paths at a port, Typical (signoff STA report)", "-"] +
                 ["-" if d["io"] is None else str(d["io"][0]) for d in shells])
     line("power, vectorless tt 100 MHz (W)", core["pwr"], [d["pwr"] for d in shells], ".4g", core["pwr"])
     windows = sorted({w for d in runs for w in d["pwr_vcd"]})

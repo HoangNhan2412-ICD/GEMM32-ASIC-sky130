@@ -85,7 +85,7 @@ wire w_load_m = w_m_free & (r_s_valid | w_s_accept);    // main takes the skid b
 wire w_load_s = ~w_m_free & w_s_accept;                 // skid parks the new beat
 
 generate
-if (P_CLOCK_GATE) begin : g_cg
+if (P_CLOCK_GATE != 0) begin : g_cg
     wire w_gclk_m, w_gclk_s;
     AxisClockGate u_cg_m (.i_clk(i_clk), .i_en(w_load_m), .o_gclk(w_gclk_m));
     AxisClockGate u_cg_s (.i_clk(i_clk), .i_en(w_load_s), .o_gclk(w_gclk_s));

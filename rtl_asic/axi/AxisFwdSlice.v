@@ -58,7 +58,7 @@ always @(posedge i_clk or negedge i_rst_n) begin
 end
 
 generate
-if (P_CLOCK_GATE) begin : g_cg
+if (P_CLOCK_GATE != 0) begin : g_cg
     wire w_gclk;
     AxisClockGate u_cg (.i_clk(i_clk), .i_en(w_load), .o_gclk(w_gclk));
     always @(posedge w_gclk)

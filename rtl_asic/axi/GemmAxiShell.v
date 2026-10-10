@@ -129,9 +129,9 @@ module GemmAxiShell
 );
 
 localparam integer LP_STRB = P_STREAM_WIDTH / 8;
-// IP_VERSION (0x24): 1.1, array size = lanes per stream beat, 8-bit data
-localparam [7:0]  LP_LANES   = P_STREAM_WIDTH / 8;
-localparam [31:0] LP_VERSION = {8'd1, 8'd1, LP_LANES, 8'd8};
+// IP_VERSION (0x24): 1.1, [15:8] array size = lanes per stream beat, [7:0] 8-bit data
+// (32-bit arithmetic all the way, so the lint sees no truncation)
+localparam [31:0] LP_VERSION = 32'h0101_0008 | ((P_STREAM_WIDTH / 8) << 8);
 
 // ---------------------------------------------------------------------------
 // reset: asynchronous assert, synchronous release (on the KV260 the

@@ -31,6 +31,9 @@
 #                    the KV260 wrapper, ASIC copy: same result cycles expected)
 #   reg            : rtl_asic/axi/GEMM_top.v, GEMM_AXIS_REG=1 (skid buffer on
 #                    every stream: results 1-2 cycles later, same values)
+#   lean           : rtl_asic/axi/GEMM_top.v, GEMM_AXIS_REG=2 (forward slices on
+#                    the inputs, skid buffer on the result)
+# AXIS_CG=1 (with reg / lean): clock-gated slice data banks (GEMM_AXIS_CG=1)
 # ---------------------------------------------------------------------------
 set -euo pipefail
 VARIANT=${1:-asic}
@@ -38,7 +41,8 @@ KIT=$(cd "$(dirname "$0")/.." && pwd)
 REPO=${2:-${REPO:-$KIT/../GEMM_32x32_KV260-main}}
 TB_W_DEPTH=${TB_W_DEPTH:-1024}
 WRAP=${WRAP:-fpga}
-case "$WRAP" in fpga|thin|reg) ;; *) echo "WRAP must be fpga, thin or reg"; exit 2 ;; esac
+AXIS_CG=${AXIS_CG:-0}
+case "$WRAP" in fpga|thin|reg|lean) ;; *) echo "WRAP must be fpga, thin, reg or lean"; exit 2 ;; esac
 [ "$VARIANT" = orig ] && [ "$WRAP" != fpga ] && { echo "WRAP=$WRAP needs the ASIC core (asic or asic-sram)"; exit 2; }
 # TB_SHAPE="M,K,N" replaces the testbench's 64,64,64 (golden model follows)
 TB_SHAPE=${TB_SHAPE:-}
@@ -49,6 +53,7 @@ if [ -n "$TB_SHAPE" ]; then
 fi
 WRAP_TAG=""
 [ "$WRAP" != fpga ] && WRAP_TAG="_axi$WRAP"
+[ "$WRAP" != fpga ] && [ "$AXIS_CG" = 1 ] && WRAP_TAG="${WRAP_TAG}cg"
 BUILD=$KIT/sim/build_system_$VARIANT$WRAP_TAG$SHAPE_TAG
 mkdir -p "$BUILD"
 
@@ -71,10 +76,11 @@ grep -q "P_WEIGHT_BUFFER_DEPTH($TB_W_DEPTH)" "$BUILD/tb_icarus.sv" \
 ASIC_RTL=( "$KIT"/rtl_asic/*.v )       # includes GEMM_core.v, Signed_adder.v, Right_shifter.v
 case "$WRAP" in
   fpga) COMMON=( "$BUILD/tb_icarus.sv" "$REPO/rtl/GEMM_top.v" "$REPO"/axi_ip/*.v ); WRAP_DEFS=() ;;
-  thin) COMMON=( "$BUILD/tb_icarus.sv" "$KIT"/rtl_asic/axi/*.v ); WRAP_DEFS=( -DGEMM_AXIS_REG=0 ) ;;
-  reg)  COMMON=( "$BUILD/tb_icarus.sv" "$KIT"/rtl_asic/axi/*.v ); WRAP_DEFS=( -DGEMM_AXIS_REG=1 ) ;;
+  thin) COMMON=( "$BUILD/tb_icarus.sv" "$KIT"/rtl_asic/axi/*.v ); WRAP_DEFS=( -DGEMM_AXIS_REG=0 -DGEMM_AXIS_CG=0 ) ;;
+  reg)  COMMON=( "$BUILD/tb_icarus.sv" "$KIT"/rtl_asic/axi/*.v ); WRAP_DEFS=( -DGEMM_AXIS_REG=1 -DGEMM_AXIS_CG="$AXIS_CG" ) ;;
+  lean) COMMON=( "$BUILD/tb_icarus.sv" "$KIT"/rtl_asic/axi/*.v ); WRAP_DEFS=( -DGEMM_AXIS_REG=2 -DGEMM_AXIS_CG="$AXIS_CG" ) ;;
 esac
-echo "AXI wrapper: $WRAP"
+echo "AXI wrapper: $WRAP${AXIS_CG:+ (AXIS_CG=$AXIS_CG)}"
 DEFS=()
 
 find_sram_model() {

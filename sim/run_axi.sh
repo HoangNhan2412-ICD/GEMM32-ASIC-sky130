@@ -2,16 +2,20 @@
 # ---------------------------------------------------------------------------
 # AXI accelerator IP (rtl_asic/axi): every RTL check in one go.
 #
-#   1. AxisSkidBuffer unit test (sim/tb_axis_skid.v): random valid/ready,
+#   1. stream slices alone (sim/tb_axis_skid.v): AxisSkidBuffer and
+#      AxisFwdSlice, each without and with clock gating; random valid/ready,
 #      full throughput, heavy backpressure, bursts; order, loss, repeats and
 #      the AXI-Stream stability rules
-#   2. lint of the AXI modules (only if verilator is installed)
-#   3. the ORIGINAL KV260 testbench on GEMM_top (ASIC) + ASIC core:
-#        orig            reference: the KV260 RTL, its result cycles
-#        asic  WRAP=thin must give the SAME cycle for every result event
-#        asic  WRAP=reg  same results, 1-2 cycles later (latency reported)
-#        asic-sram WRAP=reg, 3 matrix shapes: the netlist OpenLane builds
-#          (OpenRAM models, GEMM_DP_RESET=0) behind the registered wrapper
+#   2. the shell alone (sim/tb_axi_shell.v) against a core model, for thin,
+#      reg, reg+cg, lean, lean+cg: register map, IRQ, ERROR, JOB_CYCLES, ID,
+#      data through every slice under random backpressure on both sides
+#   3. lint of the shell variants (only if verilator is installed)
+#   4. the ORIGINAL KV260 testbench on GEMM_top (ASIC) + ASIC core:
+#        orig             reference: the KV260 RTL, its result cycles
+#        asic WRAP=thin   must give the SAME cycle for every result event
+#        asic WRAP=reg / reg+cg / lean / lean+cg: same results, a few cycles later
+#        asic-sram WRAP=lean AXIS_CG=1, 3 matrix shapes: the netlist OpenLane
+#          builds (OpenRAM models, GEMM_DP_RESET=0) behind the proposed wrapper
 #
 # usage:  sim/run_axi.sh [path/to/GEMM_32x32_KV260-main]
 # output: sim/build_axi/  (logs, cycles_*.txt), PASS/FAIL per line, exit 1 on any FAIL
@@ -25,49 +29,70 @@ FAILS=0
 pass() { printf "  \033[32mPASS\033[0m %s\n" "$*"; }
 fail() { printf "  \033[31mFAIL\033[0m %s\n" "$*"; FAILS=$((FAILS+1)); }
 A=$KIT/rtl_asic/axi
+SLICES=( "$A/AxisSkidBuffer.v" "$A/AxisFwdSlice.v" "$A/AxisClockGate.v" )
 
-# ---- 1. skid buffer
-echo "== AxisSkidBuffer unit test"
-if iverilog -g2012 -o "$OUT/skid.vvp" "$KIT/sim/tb_axis_skid.v" "$A/AxisSkidBuffer.v" > "$OUT/skid_build.log" 2>&1 \
-   && ( cd "$OUT" && vvp -n skid.vvp > skid.log 2>&1 ) && grep -q "SKID PASS" "$OUT/skid.log"; then
-    pass "$(grep -E '^phase 2:' "$OUT/skid.log"); $(grep -E '^sent' "$OUT/skid.log")"
-else
-    fail "skid buffer (see sim/build_axi/skid.log, skid_build.log)"
-    grep -E "ERROR|timeout" "$OUT/skid.log" 2>/dev/null | head -5 | sed 's/^/       /'
-fi
+# ---- 1. slices
+echo "== stream slices"
+for v in skid skid_cg fwd fwd_cg; do
+    d=(); case $v in fwd*) d+=(-DTB_FWD) ;; esac; case $v in *_cg) d+=(-DTB_CG) ;; esac
+    if iverilog -g2012 "${d[@]}" -o "$OUT/slice_$v.vvp" "$KIT/sim/tb_axis_skid.v" "${SLICES[@]}" \
+           > "$OUT/slice_${v}_build.log" 2>&1 \
+       && ( cd "$OUT" && vvp -n "slice_$v.vvp" > "slice_$v.log" 2>&1 ) && grep -q "SKID PASS" "$OUT/slice_$v.log"; then
+        pass "$v: $(grep -E '^phase 2:' "$OUT/slice_$v.log"); $(grep -E '^sent' "$OUT/slice_$v.log")"
+    else
+        fail "$v (see sim/build_axi/slice_$v.log, slice_${v}_build.log)"
+        grep -E "ERROR|timeout" "$OUT/slice_$v.log" 2>/dev/null | head -5 | sed 's/^/       /'
+    fi
+done
 
-# ---- 2. lint
+# ---- 2. shell alone
+echo "== GemmAxiShell against a core model"
+SHELL_SRC=( "$A/GemmAxiShell.v" "$A/AxiLiteControlRegs.v" "${SLICES[@]}" "$KIT/rtl_asic/ResetSync.v" )
+for v in 0_0 1_0 1_1 2_0 2_1; do
+    r=${v%_*}; c=${v#*_}
+    if iverilog -g2012 -I "$KIT/rtl_asic" -DGEMM_AXIS_REG="$r" -DGEMM_AXIS_CG="$c" -o "$OUT/shell_$v.vvp" \
+           "$KIT/sim/tb_axi_shell.v" "${SHELL_SRC[@]}" > "$OUT/shell_${v}_build.log" 2>&1 \
+       && ( cd "$OUT" && vvp -n "shell_$v.vvp" > "shell_$v.log" 2>&1 ) && grep -q "SHELL PASS" "$OUT/shell_$v.log"; then
+        pass "GEMM_AXIS_REG=$r CG=$c: $(grep -E '^job 1:' "$OUT/shell_$v.log")"
+    else
+        fail "GEMM_AXIS_REG=$r CG=$c (see sim/build_axi/shell_$v.log, shell_${v}_build.log)"
+        grep -E "ERROR|timeout" "$OUT/shell_$v.log" 2>/dev/null | head -5 | sed 's/^/       /'
+    fi
+done
+
+# ---- 3. lint
 if command -v verilator >/dev/null; then
-    echo "== verilator lint (AXI modules)"
+    echo "== verilator lint (shell variants)"
     # SYNCASYNCNET: the synchronised reset is async in the slices/flags and sync in the
-    # AXI4-Lite template, on purpose (same as the KV260 IP)
-    Q="-Wno-DECLFILENAME -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-PINCONNECTEMPTY -Wno-WIDTHEXPAND -Wno-SYNCASYNCNET"
-    for r in 0 1; do
-        if verilator --lint-only -Wall $Q -I"$KIT/rtl_asic" -DGEMM_AXIS_REG=$r --top-module GemmAxiShell \
-               "$A/GemmAxiShell.v" "$A/AxiLiteControlRegs.v" "$A/AxisSkidBuffer.v" "$KIT/rtl_asic/ResetSync.v" \
-               > "$OUT/lint_shell_$r.log" 2>&1; then
-            pass "GemmAxiShell GEMM_AXIS_REG=$r: lint clean"
-        else fail "GemmAxiShell GEMM_AXIS_REG=$r: lint (see sim/build_axi/lint_shell_$r.log)"; fi
+    # AXI4-Lite template, on purpose (same as the KV260 IP). LATCH: the behavioural ICG
+    # model in AxisClockGate (synthesis uses the sky130 dlclkp cell instead).
+    Q="-Wno-DECLFILENAME -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-PINCONNECTEMPTY -Wno-WIDTHEXPAND -Wno-SYNCASYNCNET -Wno-LATCH"
+    for v in 0_0 1_0 1_1 2_0 2_1; do
+        r=${v%_*}; c=${v#*_}
+        if verilator --lint-only -Wall $Q -I"$KIT/rtl_asic" -DGEMM_AXIS_REG=$r -DGEMM_AXIS_CG=$c --top-module GemmAxiShell \
+               "${SHELL_SRC[@]}" > "$OUT/lint_shell_$v.log" 2>&1; then
+            pass "GemmAxiShell REG=$r CG=$c: lint clean"
+        else fail "GemmAxiShell REG=$r CG=$c: lint (see sim/build_axi/lint_shell_$v.log)"; fi
     done
 else
     echo "== verilator not installed: lint skipped"
 fi
 
-# ---- 3. original testbench
+# ---- 4. original testbench
 echo "== original KV260 testbench"
 events() { grep -E "RESULT_VALID_FIRST|RESULT_ACCEPT" "$1" 2>/dev/null; }
-run() {   # run <label> <variant> <wrap> <shape or "">
-    local label=$1 v=$2 w=$3 shape=$4
-    if WRAP=$w TB_SHAPE="$shape" "$KIT/sim/run_system.sh" "$v" "$REPO" > "$OUT/sys_$label.log" 2>&1; then
+run() {   # run <label> <variant> <wrap> <cg> <shape or "">
+    local label=$1 v=$2 w=$3 cg=$4 shape=$5
+    if WRAP=$w AXIS_CG=$cg TB_SHAPE="$shape" "$KIT/sim/run_system.sh" "$v" "$REPO" > "$OUT/sys_$label.log" 2>&1; then
         pass "$label: OVERALL PASS"
     else
         fail "$label failed the testbench (see sim/build_axi/sys_$label.log)"
     fi
 }
-build_of() {   # build directory run_system.sh used: build_of <variant> <wrap> <shape>
-    local v=$1 w=$2 shape=$3 tag=""
+build_of() {   # build directory run_system.sh used: build_of <variant> <wrap> <cg> <shape>
+    local v=$1 w=$2 cg=$3 shape=$4 tag="" wt=""
     [ -n "$shape" ] && tag=_M$(echo "$shape" | awk -F, '{print $1"K"$2"N"$3}')
-    local wt=""; [ "$w" != fpga ] && wt=_axi$w
+    if [ "$w" != fpga ]; then wt=_axi$w; [ "$cg" = 1 ] && wt=${wt}cg; fi
     echo "$KIT/sim/build_system_$v$wt$tag"
 }
 # compare the result events of two runs: same job/beat/tlast sequence; report cycle shift
@@ -92,19 +117,20 @@ compare() {   # compare <label> <ref events> <dut events> <must be identical: 1|
 
 for shape in "" "8,32,544" "16,992,32"; do
     tag=${shape:+_M$(echo "$shape" | awk -F, '{print $1"K"$2"N"$3}')}
-    run "orig$tag" orig fpga "$shape"
-    events "$(build_of orig fpga "$shape")/system.log" > "$OUT/cycles_orig$tag.txt"
+    run "orig$tag" orig fpga 0 "$shape"
+    events "$(build_of orig fpga 0 "$shape")/system.log" > "$OUT/cycles_orig$tag.txt"
     if [ -z "$shape" ]; then
-        run "thin" asic thin ""
-        events "$(build_of asic thin "")/system.log" > "$OUT/cycles_thin.txt"
-        compare "thin" "$OUT/cycles_orig.txt" "$OUT/cycles_thin.txt" 1
-        run "reg" asic reg ""
-        events "$(build_of asic reg "")/system.log" > "$OUT/cycles_reg.txt"
-        compare "reg" "$OUT/cycles_orig.txt" "$OUT/cycles_reg.txt" 0
+        for w in thin reg reg_cg lean lean_cg; do
+            ww=${w%_cg}; cg=0; [ "$w" != "$ww" ] && cg=1
+            run "$w" asic "$ww" "$cg" ""
+            events "$(build_of asic "$ww" "$cg" "")/system.log" > "$OUT/cycles_$w.txt"
+            same=0; [ "$w" = thin ] && same=1
+            compare "$w" "$OUT/cycles_orig.txt" "$OUT/cycles_$w.txt" "$same"
+        done
     fi
-    run "reg-sram$tag" asic-sram reg "$shape"
-    events "$(build_of asic-sram reg "$shape")/system.log" > "$OUT/cycles_reg-sram$tag.txt"
-    compare "reg-sram${shape:+ ($shape)}" "$OUT/cycles_orig$tag.txt" "$OUT/cycles_reg-sram$tag.txt" 0
+    run "lean_cg-sram$tag" asic-sram lean 1 "$shape"
+    events "$(build_of asic-sram lean 1 "$shape")/system.log" > "$OUT/cycles_lean_cg-sram$tag.txt"
+    compare "lean_cg-sram${shape:+ ($shape)}" "$OUT/cycles_orig$tag.txt" "$OUT/cycles_lean_cg-sram$tag.txt" 0
 done
 
 echo

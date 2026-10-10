@@ -46,10 +46,16 @@
 // AXI accelerator IP (rtl_asic/axi/GEMM_top.v): how the three AXI4-Stream
 // ports are built. 0 = "thin", the KV260 adapters wire for wire (core port
 // timing = IP port timing). 1 = "reg", a skid buffer on each stream so every
-// AXIS port of the IP is registered. Override with +define+GEMM_AXIS_REG=0 /
-// SYNTH_DEFINES.
+// AXIS port of the IP is registered. 2 = "lean", one-entry forward slices on
+// the two inputs + a skid buffer on the result (input TREADY combinational,
+// ~1/3 fewer flops). Override with +define+GEMM_AXIS_REG=n / SYNTH_DEFINES.
 `ifndef GEMM_AXIS_REG
 `define GEMM_AXIS_REG 1
+`endif
+// 1 = clock-gate the data banks of the stream slices (sky130 dlclkp ICG):
+// banks that are not loading get no clock. Only with GEMM_AXIS_REG 1 or 2.
+`ifndef GEMM_AXIS_CG
+`define GEMM_AXIS_CG 0
 `endif
 
 `endif

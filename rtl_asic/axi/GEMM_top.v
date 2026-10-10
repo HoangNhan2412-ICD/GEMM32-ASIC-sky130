@@ -6,8 +6,11 @@
 //   = GemmAxiShell (rtl_asic/axi) + GemmAccelerator (rtl_asic, core_v11).
 //
 // Drop-in replacement for rtl/GEMM_top.v of the KV260 repo: same module
-// name, same ports, same parameters, same register map, so the original
-// testbench (tb_GEMM_2_job_64x64.sv) and the KV260 driver use it unchanged.
+// name, same ports and parameters (plus an irq output), registers 0x00..0x0C
+// as on the KV260, so the original testbench (tb_GEMM_2_job_64x64.sv) and the
+// KV260 driver use it unchanged. The IP itself has a 6-bit AXI4-Lite address
+// for the new registers 0x10..0x24 (AxiLiteControlRegs); the KV260 testbench
+// instantiates it with 4 bits and simply cannot reach them.
 // sim/run_system.sh WRAP=thin|reg builds it instead of the KV260 wrapper.
 //
 // The compute core is not touched. It gets NO parameter overrides: in the
@@ -22,7 +25,7 @@
 module GEMM_top
 #(
     parameter integer P_AXI_LITE_DATA_WIDTH  = 32,
-    parameter integer P_AXI_LITE_ADDR_WIDTH  = 4,
+    parameter integer P_AXI_LITE_ADDR_WIDTH  = 6,
     parameter integer P_ARRAY_SIZE           = 32,
     parameter integer P_DATA_WIDTH           = 8,
     parameter integer P_SHIFT_WIDTH          = 10,
@@ -33,7 +36,8 @@ module GEMM_top
     parameter integer P_ROW_COUNT_WIDTH      = 9,
     parameter integer P_K_BLOCK_COUNT_WIDTH  = 5,
     parameter integer P_N_BLOCK_COUNT_WIDTH  = 5,
-    parameter integer P_AXIS_REG             = `GEMM_AXIS_REG
+    parameter integer P_AXIS_REG             = `GEMM_AXIS_REG,
+    parameter integer P_AXIS_CG              = `GEMM_AXIS_CG
 )
 (
     // ---- AXI4-Lite control
@@ -58,6 +62,7 @@ module GEMM_top
     output [1:0]                            S_AXI_RRESP,
     output                                  S_AXI_RVALID,
     input                                   S_AXI_RREADY,
+    output                                  irq,            // job done / error (registers 0x10, 0x14)
 
     // ---- feature AXI4-Stream slave
     output                                          feature_axis_tready,
@@ -86,8 +91,8 @@ localparam integer LP_W = P_ARRAY_SIZE * P_DATA_WIDTH;
 // ---------------------------------------------------------------------------
 // the parameters must describe the core that is really built: GemmAccelerator
 // with its defaults (array 32 x 8 bit, shift 10, accumulator 32, counters
-// 9/5/5, depths from gemm_asic_cfg.vh) and the 32-bit, 4-bit-address AXI4-Lite
-// of AxiLiteControlRegs
+// 9/5/5, depths from gemm_asic_cfg.vh) and a 32-bit AXI4-Lite with a 6-bit
+// address (the IP) or 4-bit (the KV260 testbench, registers 0x00..0x0C only)
 // ---------------------------------------------------------------------------
 `ifndef SYNTHESIS
 initial begin
@@ -96,7 +101,8 @@ initial begin
         P_OUTPUT_BUFFER_DEPTH != `GEMM_O_DEPTH ||
         P_SHIFT_WIDTH != 10 || P_ACCUM_WIDTH != 32 || P_ROW_COUNT_WIDTH != 9 ||
         P_K_BLOCK_COUNT_WIDTH != 5 || P_N_BLOCK_COUNT_WIDTH != 5 ||
-        P_AXI_LITE_DATA_WIDTH != 32 || P_AXI_LITE_ADDR_WIDTH != 4) begin
+        P_AXI_LITE_DATA_WIDTH != 32 ||
+        (P_AXI_LITE_ADDR_WIDTH != 4 && P_AXI_LITE_ADDR_WIDTH != 6)) begin
         $display("ERROR: GEMM_top (ASIC) parameters disagree with the core that is built: array %0d x %0d, depths W%0d F%0d O%0d; expected 32 x 8, W%0d F%0d O%0d",
                  P_ARRAY_SIZE, P_DATA_WIDTH, P_WEIGHT_BUFFER_DEPTH, P_FEATURE_BUFFER_DEPTH,
                  P_OUTPUT_BUFFER_DEPTH, `GEMM_W_DEPTH, `GEMM_F_DEPTH, `GEMM_O_DEPTH);
@@ -122,7 +128,8 @@ GemmAxiShell #(
     .P_AXI_LITE_DATA_WIDTH (P_AXI_LITE_DATA_WIDTH),
     .P_AXI_LITE_ADDR_WIDTH (P_AXI_LITE_ADDR_WIDTH),
     .P_STREAM_WIDTH        (LP_W),
-    .P_AXIS_REG            (P_AXIS_REG)
+    .P_AXIS_REG            (P_AXIS_REG),
+    .P_AXIS_CG             (P_AXIS_CG)
 ) u_axi_shell (
     .S_AXI_ACLK    (S_AXI_ACLK),
     .S_AXI_ARESETN (S_AXI_ARESETN),
@@ -145,6 +152,7 @@ GemmAxiShell #(
     .S_AXI_RRESP   (S_AXI_RRESP),
     .S_AXI_RVALID  (S_AXI_RVALID),
     .S_AXI_RREADY  (S_AXI_RREADY),
+    .irq           (irq),
 
     .feature_axis_tready (feature_axis_tready),
     .feature_axis_tdata  (feature_axis_tdata),

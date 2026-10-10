@@ -1,6 +1,10 @@
 `timescale 1ns / 1ps
 // ---------------------------------------------------------------------------
-// tb_axis_skid - unit test of rtl_asic/axi/AxisSkidBuffer.v
+// tb_axis_skid - unit test of rtl_asic/axi/AxisSkidBuffer.v and AxisFwdSlice.v
+//   -DTB_FWD : test AxisFwdSlice instead (its s_ready is combinational from
+//              m_ready by design, so the "s_ready only changes on a clock
+//              edge" check is off)
+//   -DTB_CG  : with P_CLOCK_GATE = 1 (data banks behind AxisClockGate)
 //
 // The source sends the numbers 0, 1, 2, ... and the sink must see exactly
 // that sequence: nothing lost, nothing repeated, nothing out of order. Four
@@ -17,7 +21,8 @@
 //     combinational path from s_valid/m_ready would show as a change there)
 // Prints "SKID PASS" / "SKID FAIL".
 //
-// run: iverilog -g2012 -o skid.vvp sim/tb_axis_skid.v rtl_asic/axi/AxisSkidBuffer.v && vvp -n skid.vvp
+// run: iverilog -g2012 [-DTB_FWD] [-DTB_CG] -o skid.vvp sim/tb_axis_skid.v rtl_asic/axi/AxisSkidBuffer.v \
+//        rtl_asic/axi/AxisFwdSlice.v rtl_asic/axi/AxisClockGate.v && vvp -n skid.vvp
 // ---------------------------------------------------------------------------
 module tb_axis_skid;
 localparam integer W       = 32;
@@ -32,7 +37,16 @@ wire         m_valid;
 wire [W-1:0] m_data;
 reg          m_ready = 1'b0;
 
-AxisSkidBuffer #(.P_WIDTH(W)) dut (
+`ifdef TB_CG
+localparam integer CG = 1;
+`else
+localparam integer CG = 0;
+`endif
+`ifdef TB_FWD
+AxisFwdSlice #(.P_WIDTH(W), .P_CLOCK_GATE(CG)) dut (
+`else
+AxisSkidBuffer #(.P_WIDTH(W), .P_CLOCK_GATE(CG)) dut (
+`endif
     .i_clk(clk), .i_rst_n(rst_n),
     .i_s_valid(s_valid), .o_s_ready(s_ready), .i_s_data(s_data),
     .o_m_valid(m_valid), .i_m_ready(m_ready), .o_m_data(m_data)
@@ -41,7 +55,11 @@ AxisSkidBuffer #(.P_WIDTH(W)) dut (
 // the wide instance used in the IP, only to make sure it elaborates
 wire w_wv, w_wr;
 wire [257:0] w_wd;
-AxisSkidBuffer #(.P_WIDTH(258)) dut_wide (
+`ifdef TB_FWD
+AxisFwdSlice #(.P_WIDTH(258), .P_CLOCK_GATE(CG)) dut_wide (
+`else
+AxisSkidBuffer #(.P_WIDTH(258), .P_CLOCK_GATE(CG)) dut_wide (
+`endif
     .i_clk(clk), .i_rst_n(rst_n),
     .i_s_valid(1'b0), .o_s_ready(w_wr), .i_s_data(258'd0),
     .o_m_valid(w_wv), .i_m_ready(1'b1), .o_m_data(w_wd)
@@ -97,10 +115,12 @@ always @(posedge clk)
 
 // ---- s_ready must not react to inputs between clock edges
 always @(negedge clk) prev_s_ready <= s_ready;
+`ifndef TB_FWD
 always @(s_valid or m_ready or s_data) begin
     #1;
     if (rst_n && (s_ready !== prev_s_ready)) fail("s_ready changed without a clock edge");
 end
+`endif
 
 // ---- stimulus: decided at negedge, from the state after the posedge
 function rnd_pct(input integer pct);
@@ -166,6 +186,11 @@ initial begin
     repeat (10) @(posedge clk);
     if (got != sent) fail("beats left inside after draining");
     $display("sent %0d, received %0d, errors %0d", sent, got, errors);
+`ifdef TB_FWD
+    $display("dut: AxisFwdSlice, P_CLOCK_GATE=%0d", CG);
+`else
+    $display("dut: AxisSkidBuffer, P_CLOCK_GATE=%0d", CG);
+`endif
     $display("%s", errors == 0 ? "SKID PASS" : "SKID FAIL");
     $finish;
 end

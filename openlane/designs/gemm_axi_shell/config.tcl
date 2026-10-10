@@ -4,7 +4,8 @@
 #   status + the three AXI4-Stream ports, without the GEMM core.
 # What it gives: the cell area, flop count, timing and power the AXI
 # interface adds to core_v11, for each stream variant:
-#   openlane/run_flow.sh axi-shell      both variants, tags shell_thin / shell_reg
+#   openlane/run_flow.sh axi-shell      tags shell_thin, shell_reg, shell_lean, shell_lean_cg
+#                                       (AXI_SHELL_VARIANTS), each after a shell_<v>_cal run
 # The die (sizes.tcl, pin_order.cfg from gen_axi_files.py) is sized by the
 # ~1780 ports, not by the logic, so DIEAREA / utilisation of this run mean
 # nothing; read the cell area.
@@ -12,17 +13,26 @@
 source $::env(DESIGN_DIR)/../gemm_common.tcl
 source $::env(DESIGN_DIR)/sizes.tcl
 
-# GEMM_AXIS_REG: 0 = thin (KV260 adapters), 1 = reg (skid buffers).
-# run_flow.sh writes variant.tcl before each run; 1 if it is missing.
+# GEMM_AXIS_REG: 0 = thin (KV260 adapters), 1 = reg (skid buffers),
+# 2 = lean (forward slices in, skid buffer out); GEMM_AXIS_CG: 1 = clock-gated
+# slice data banks (sky130 dlclkp). run_flow.sh writes variant.tcl before each
+# run; reg without clock gating if it is missing.
 set ::env(GEMM_AXIS_REG) 1
+set ::env(GEMM_AXIS_CG)  0
 if { [file exists $::env(DESIGN_DIR)/variant.tcl] } { source $::env(DESIGN_DIR)/variant.tcl }
 
 set ::env(DESIGN_NAME) "GemmAxiShell"
 set SRC $::env(DESIGN_DIR)/src
 set ::env(VERILOG_FILES) [list $SRC/GemmAxiShell.v $SRC/AxiLiteControlRegs.v \
-                              $SRC/AxisSkidBuffer.v $SRC/ResetSync.v]
+                              $SRC/AxisSkidBuffer.v $SRC/AxisFwdSlice.v $SRC/AxisClockGate.v \
+                              $SRC/ResetSync.v]
 set ::env(VERILOG_INCLUDE_DIRS) [list $SRC]
-set ::env(SYNTH_DEFINES) [list GEMM_AXIS_REG=$::env(GEMM_AXIS_REG)]
+set ::env(SYNTH_DEFINES) [list GEMM_AXIS_REG=$::env(GEMM_AXIS_REG) GEMM_AXIS_CG=$::env(GEMM_AXIS_CG)]
+# AxisClockGate instantiates sky130_fd_sc_hd__dlclkp_1 by name. Yosys only gets
+# std cells for mapping (SYNTH_READ_BLACKBOX_LIB is 0), so without this port
+# view it stops at "hierarchy -check"; the Verilator lint needs it too in case
+# SYNTHESIS is defined there.
+if { $::env(GEMM_AXIS_CG) } { set ::env(VERILOG_FILES_BLACKBOX) [list $::env(DESIGN_DIR)/dlclkp_bb.v] }
 
 set ::env(CLOCK_PORT) "S_AXI_ACLK"
 set ::env(CLOCK_NET)  "S_AXI_ACLK"

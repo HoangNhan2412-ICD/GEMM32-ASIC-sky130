@@ -12,7 +12,7 @@ at 300 the 1613 flops of "reg" were pulled against the 971 West pins and
 global routing overflowed in the first 100 um (GRT-0119), while the die as
 a whole was 17 % used.
 
-    West  (bottom -> top): S_AXI_ACLK, S_AXI_ARESETN, AXI4-Lite,
+    West  (bottom -> top): S_AXI_ACLK, S_AXI_ARESETN, AXI4-Lite (+ irq),
                            feature AXIS, weight AXIS, result AXIS
     East  (bottom -> top): core reset + cfg, then the core-side stream ports,
                            each bit at the same height as its AXIS bit on
@@ -34,13 +34,13 @@ def bus(name, width):
     return [esc(name, b) for b in range(width)]
 
 
-def axil_pins():
-    # AXI4-Lite, 32-bit data, 4-bit address (same widths as the KV260 IP)
-    return (bus("S_AXI_AWADDR", 4) + bus("S_AXI_AWPROT", 3) + ["S_AXI_AWVALID", "S_AXI_AWREADY"] +
+def axil_pins(aw):
+    # AXI4-Lite, 32-bit data, aw-bit address (the IP: 6, registers 0x00..0x24), + irq
+    return (bus("S_AXI_AWADDR", aw) + bus("S_AXI_AWPROT", 3) + ["S_AXI_AWVALID", "S_AXI_AWREADY"] +
             bus("S_AXI_WDATA", 32) + bus("S_AXI_WSTRB", 4) + ["S_AXI_WVALID", "S_AXI_WREADY"] +
             bus("S_AXI_BRESP", 2) + ["S_AXI_BVALID", "S_AXI_BREADY"] +
-            bus("S_AXI_ARADDR", 4) + bus("S_AXI_ARPROT", 3) + ["S_AXI_ARVALID", "S_AXI_ARREADY"] +
-            bus("S_AXI_RDATA", 32) + bus("S_AXI_RRESP", 2) + ["S_AXI_RVALID", "S_AXI_RREADY"])
+            bus("S_AXI_ARADDR", aw) + bus("S_AXI_ARPROT", 3) + ["S_AXI_ARVALID", "S_AXI_ARREADY"] +
+            bus("S_AXI_RDATA", 32) + bus("S_AXI_RRESP", 2) + ["S_AXI_RVALID", "S_AXI_RREADY"] + ["irq"])
 
 
 def main():
@@ -49,12 +49,13 @@ def main():
     ap.add_argument("--dw", type=int, default=8)
     ap.add_argument("--height", type=float, default=1500.0)
     ap.add_argument("--width", type=float, default=600.0)
+    ap.add_argument("--addr-width", type=int, default=6, help="AXI4-Lite address bits (GemmAxiShell default 6)")
     ap.add_argument("--out", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "designs"))
     a = ap.parse_args()
     w = a.n * a.dw
     strb = w // 8
 
-    west = ["S_AXI_ACLK", "S_AXI_ARESETN"] + axil_pins()
+    west = ["S_AXI_ACLK", "S_AXI_ARESETN"] + axil_pins(a.addr_width)
     ctl = (["o_core_rst_n"] + bus("o_cfg_shift", 10) + bus("o_cfg_row_count", 9) +
            bus("o_cfg_k_block_count", 5) + bus("o_cfg_n_block_count", 5))
     if len(west) < len(ctl):

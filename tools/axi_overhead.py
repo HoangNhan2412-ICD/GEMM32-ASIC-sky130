@@ -2,11 +2,12 @@
 """
 axi_overhead.py - what the AXI interface adds to the GEMM core.
 
-usage: axi_overhead.py <core run> <shell_thin run> <shell_reg run> [--md out.md] [--lib <hd tt .lib>]
+usage: axi_overhead.py <core run> <shell run> [<shell run> ...] [--md out.md] [--lib <hd tt .lib>]
                        [--row <row run>]
 
 core run  : the core_v11 run (designs/gemm_core/runs/core_v11)
-shell runs: gemm_axi_shell runs of the two stream variants (run_flow.sh axi-shell)
+shell runs: gemm_axi_shell runs, one per stream variant (run_flow.sh axi-shell:
+            shell_thin, shell_reg, shell_lean, shell_lean_cg, ...)
 
 Prints one table (markdown): cell count, flops, standard-cell area, timing
 per corner, vectorless power, for the core and each shell variant, and the
@@ -32,9 +33,12 @@ Where the numbers come from
                                 and, apart, of the paths that start or end at a port
                                 (core_v11 waives its I/O paths: no pad ring yet)
   power                       : reports/power/vectorless.design.rpt (OpenSTA
-                                default activity, tt/25C/1.80V, 100 MHz):
-                                tools/power.sh for the core,
-                                tools/axi_shell_power.sh for the shells
+                                default activity, tt/25C/1.80V, 100 MHz) and
+                                reports/power/vcd_<c0>_<c1>.design.rpt (activity from the
+                                original testbench, cycles c0..c1): tools/power.sh for the
+                                core, tools/axi_shell_power.sh for the shells. A shell VCD
+                                number is compared with the core's VCD number of the SAME
+                                window only (2300..3200 = compute phase of job 2).
 """
 import csv
 import glob
@@ -222,9 +226,9 @@ def collect(run, areas, row_area=None):
         "setup_c": corner_slacks(run, "setup"),
         "hold_c": corner_slacks(run, "hold"),
         "pwr": power_total(run),
-        "pwr_vcd": next((power_total(run, os.path.basename(f)[:-len(".design.rpt")])
-                         for f in sorted(glob.glob(os.path.join(run, "reports", "power", "vcd_*.design.rpt")))),
-                        None),
+        "pwr_vcd": {os.path.basename(f)[len("vcd_"):-len(".design.rpt")]:
+                    power_total(run, os.path.basename(f)[:-len(".design.rpt")])
+                    for f in sorted(glob.glob(os.path.join(run, "reports", "power", "vcd_*.design.rpt")))},
         "io": io_paths(run),
     }
 
@@ -254,7 +258,7 @@ def main():
         k = args.index("--row")
         row_run = args[k + 1].rstrip("/")
         del args[k:k + 2]
-    if len(args) != 3:
+    if len(args) < 2:
         print(__doc__)
         return 2
     lib = find_lib(lib)
@@ -267,59 +271,66 @@ def main():
         row_area = rr["area"]
         if row_area is None:
             print(f"note: no std-cell area for the row run {row_run}")
-    core, thin, reg = (collect(a.rstrip("/"), areas, row_area) for a in args)
+    runs = [collect(a.rstrip("/"), areas, row_area) for a in args]
+    core, shells = runs[0], runs[1:]
     # the core's cells and flops including the ones inside its row macros
     for k in ("cells", "flops"):
         core[k + "_all"] = (core[k] + core["rows"] * rr[k]
                             if rr and core[k] is not None and rr[k] is not None and core["rows"] else None)
+    core["area_ref"] = core["area_all"] if core["rows"] and row_area else None
 
     rows = []
 
-    def row(label, key, spec, overhead=True, get=None):
-        g = get or (lambda d: d[key])
-        c, t, r = g(core), g(thin), g(reg)
-        rows.append([label, fmt(c, spec), fmt(t, spec), fmt(r, spec),
-                     pct(t, c) if overhead else "", pct(r, c) if overhead else ""])
+    def line(label, core_val, vals, spec, ref=None):
+        """one table row: core value, then each shell value with its share of `ref`"""
+        cells = [label, fmt(core_val, spec)]
+        for v in vals:
+            c = fmt(v, spec)
+            if ref is not None and v is not None and c != "-":
+                c += f" ({pct(v, ref)})"
+            cells.append(c)
+        rows.append(cells)
 
-    def row_all(label, key, spec):
-        c = core[key + "_all"]
-        rows.append([label, fmt(c, spec), fmt(thin[key], spec), fmt(reg[key], spec),
-                     pct(thin[key], c), pct(reg[key], c)])
+    def get(d, key):
+        return d.get(key)
 
-    row_all(f"standard cells, core incl. {core['rows']} row macros (synthesis)", "cells", "d")
-    row_all(f"flops, core incl. {core['rows']} row macros (synthesis)", "flops", "d")
-    row("standard cells, core top level only", "cells", "d", overhead=False)
-    row("std-cell area after synthesis, core top level only (um^2)", "area", ".0f", overhead=False)
-    rows.append([f"core std-cell area incl. {core['rows']} row macros (um^2)",
-                 fmt(core["area_all"] if core["rows"] and row_area else None, ".0f"), "", "",
-                 pct(thin["area"], core["area_all"]) if core["rows"] and row_area else "-",
-                 pct(reg["area"], core["area_all"]) if core["rows"] and row_area else "-"])
-    row("placed area before fill (um^2)", "layout", ".0f", overhead=False)
-    rows.append(["die area (mm^2)", fmt(core["die"], ".2f"), "(pin-bound, n/a)", "(pin-bound, n/a)",
-                 pct(None if thin["layout"] is None else thin["layout"] / 1e6, core["die"]),
-                 pct(None if reg["layout"] is None else reg["layout"] / 1e6, core["die"])])
+    line(f"standard cells, core incl. {core['rows']} row macros (synthesis)", core["cells_all"],
+         [d["cells"] for d in shells], "d", core["cells_all"])
+    line(f"flops, core incl. {core['rows']} row macros (synthesis)", core["flops_all"],
+         [d["flops"] for d in shells], "d", core["flops_all"])
+    line(f"std-cell area after synthesis (um^2), core incl. rows", core["area_ref"],
+         [d["area"] for d in shells], ".0f", core["area_ref"])
+    line("std-cell area after synthesis (um^2), core top level only", core["area"],
+         [d["area"] for d in shells], ".0f")
+    die_um2 = core["die"] * 1e6 if core["die"] else None
+    line("placed area before fill (um^2), share of the core die", die_um2,
+         [d["layout"] for d in shells], ".0f", die_um2)
     for kind, key in (("setup", "setup_c"), ("hold", "hold_c")):
         for corner in ("Slowest", "Typical", "Fastest"):
-            row(f"{kind} worst slack inside the block, {corner} (ns)", None, ".2f", overhead=False,
-                get=lambda d, c=corner, k=key: d[k].get(c, (None, None))[0])
+            line(f"{kind} worst slack inside the block, {corner} (ns)",
+                 core[key].get(corner, (None, None))[0],
+                 [d[key].get(corner, (None, None))[0] for d in shells], ".2f")
         for corner in ("Slowest", "Typical", "Fastest"):
-            row(f"{kind} worst slack at a port, {corner} (ns)", None, ".2f", overhead=False,
-                get=lambda d, c=corner, k=key: d[k].get(c, (None, None))[1])
-    rows.append(["violating setup paths at a port", "-",
-                 "-" if thin["io"] is None else str(thin["io"][0]),
-                 "-" if reg["io"] is None else str(reg["io"][0]), "", ""])
-    row("power, vectorless tt 100 MHz (W)", "pwr", ".4g")
-    rows.append(["power, core from VCD (W)", fmt(core["pwr_vcd"], ".4g"), "", "",
-                 pct(thin["pwr"], core["pwr_vcd"]) + " (shell vectorless)" if core["pwr_vcd"] else "",
-                 pct(reg["pwr"], core["pwr_vcd"]) + " (shell vectorless)" if core["pwr_vcd"] else ""])
+            line(f"{kind} worst slack at a port, {corner} (ns)",
+                 core[key].get(corner, (None, None))[1],
+                 [d[key].get(corner, (None, None))[1] for d in shells], ".2f")
+    rows.append(["violating setup paths at a port", "-"] +
+                ["-" if d["io"] is None else str(d["io"][0]) for d in shells])
+    line("power, vectorless tt 100 MHz (W)", core["pwr"], [d["pwr"] for d in shells], ".4g", core["pwr"])
+    windows = sorted({w for d in runs for w in d["pwr_vcd"]})
+    for w in windows:
+        cw = core["pwr_vcd"].get(w)
+        line(f"power from VCD, cycles {w.replace('_', '..')} (W)", cw,
+             [d["pwr_vcd"].get(w) for d in shells], ".4g", cw)
 
-    head = ["", f"core ({core['name']})", f"shell thin ({thin['name']})", f"shell reg ({reg['name']})",
-            "thin / core", "reg / core"]
+    head = ["", f"core ({core['name']})"] + [d["name"] for d in shells]
     out = ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
     out += ["| " + " | ".join(r) + " |" for r in rows]
-    out += ["", "Slack rows: '-' = no such path listed. core_v11 has no pad ring and waives its",
-            "port paths (README), so its 'at a port' rows are not signoff numbers.",
-            "", f"core : {core['run']}", f"thin : {thin['run']}", f"reg  : {reg['run']}",
+    out += ["", "(x %) = the shell as a share of the core in that row. Slack rows: '-' = no such path",
+            "listed (a block whose worst listed paths all touch a port has its internal paths at least as",
+            "good). core_v11 has no pad ring and waives its port paths (README): its 'at a port' rows",
+            "are not signoff numbers. A VCD row compares the same testbench window only.",
+            "", f"core : {core['run']}"] + [f"shell: {d['run']}" for d in shells] + [
             f"row  : {row_run or '(not given: core area = top-level cells only)'}",
             f"cell areas: {lib or 'liberty not found'}"]
     text = "\n".join(out)

@@ -13,9 +13,9 @@
 #   openlane/run_flow.sh core-status   progress of the running / last core run
 #   openlane/run_flow.sh core-check    judge an existing core run again (no OpenLane)
 #   openlane/run_flow.sh core-route    route + signoff again from the post-CTS layout of a run
-#   openlane/run_flow.sh axi-sim    AXI IP (rtl_asic/axi): skid-buffer test + original testbench, thin/reg
-#   openlane/run_flow.sh axi-shell  harden the AXI shell alone (thin, reg) + overhead table vs the core
-#   openlane/run_flow.sh axi-gls    original testbench on GEMM_top (reg) around the final core netlist
+#   openlane/run_flow.sh axi-sim    AXI IP (rtl_asic/axi): slice + shell tests, original testbench, all variants
+#   openlane/run_flow.sh axi-shell  harden the AXI shell alone (thin, reg, lean, lean_cg) + overhead table
+#   openlane/run_flow.sh axi-gls    original testbench on GEMM_top (lean + clock gating) around the final core netlist
 #   openlane/run_flow.sh status     stages passed so far (openlane/LOG.md)
 #   Diagnostics: core-triage, core-probe, core-precheck, array-check (see the functions below).
 #
@@ -862,18 +862,23 @@ st_axi_sim() {
 
 st_axi_shell() {
     need axi-sim
-    say "axi-shell: GemmAxiShell alone, thin and reg - what the AXI interface costs"
+    # AXI_SHELL_VARIANTS: which stream variants to harden (thin reg reg_cg lean lean_cg)
+    local variants=${AXI_SHELL_VARIANTS:-"thin reg lean lean_cg"}
+    say "axi-shell: GemmAxiShell alone ($variants) - what the AXI interface costs"
     ol_patches || { fail "patch OpenLane scripts"; finish axi-shell; }
-    local d=$OL/designs/gemm_axi_shell v r
+    local d=$OL/designs/gemm_axi_shell v r c runs=()
     python3 "$HERE/gen_axi_files.py" --out "$HERE/designs" || { fail "gen_axi_files.py"; finish axi-shell; }
     # only this design is copied (install_into_openlane.sh would also regenerate the core floorplan)
     mkdir -p "$d/src"
     cp "$HERE/designs/gemm_common.tcl" "$OL/designs/"
     cp "$HERE"/designs/gemm_axi_shell/* "$d/"
     cp "$KIT"/rtl_asic/*.v "$KIT"/rtl_asic/*.vh "$KIT"/rtl_asic/axi/*.v "$d/src/"
-    for v in thin reg; do
-        r=0; [ "$v" = reg ] && r=1
-        echo "set ::env(GEMM_AXIS_REG) $r   ;# written by run_flow.sh axi-shell" > "$d/variant.tcl"
+    for v in $variants; do
+        case "$v" in
+            thin) r=0; c=0 ;; reg) r=1; c=0 ;; reg_cg) r=1; c=1 ;; lean) r=2; c=0 ;; lean_cg) r=2; c=1 ;;
+            *) fail "unknown variant $v (thin reg reg_cg lean lean_cg)"; continue ;;
+        esac
+        printf "set ::env(GEMM_AXIS_REG) %s   ;# written by run_flow.sh axi-shell\nset ::env(GEMM_AXIS_CG)  %s\n" "$r" "$c" > "$d/variant.tcl"
         # 1) calibration run with ideal outside clocks, only to measure the shell's clock latency
         rm -f "$d/clk_latency.tcl"
         ol_run gemm_axi_shell "shell_${v}_cal"
@@ -883,15 +888,25 @@ st_axi_shell() {
         # 2) the measured run: port delays from that latency (shell.sdc)
         ol_run gemm_axi_shell "shell_$v"
         check_run "$RUNDIR" --waive-io-timing
+        runs+=("$d/runs/shell_$v")
+        # 3) power: OpenSTA default activity, then activity from the original testbench
+        #    (the shell's gate netlist in GEMM_top): the core's VCD window and the whole run
         if "$KIT/tools/axi_shell_power.sh" "$RUNDIR" > "$HERE/logs/axi_shell_power_${v}_$STAMP.log" 2>&1; then
-            pass "shell_$v power: $(grep -E '^Total' "$RUNDIR/reports/power/vectorless.design.rpt" | awk '{print $5" W"}')"
-        else fail "shell_$v power (see openlane/logs/axi_shell_power_${v}_$STAMP.log)"; fi
+            pass "shell_$v power, vectorless: $(grep -E '^Total' "$RUNDIR/reports/power/vectorless.design.rpt" | awk '{print $5" W"}')"
+        else fail "shell_$v vectorless power (see openlane/logs/axi_shell_power_${v}_$STAMP.log)"; fi
+        local w
+        for w in "2300 3200" "0 end"; do
+            set -- $w
+            if "$KIT/tools/axi_shell_power.sh" "$RUNDIR" --vcd "$1" "$2" >> "$HERE/logs/axi_shell_power_${v}_$STAMP.log" 2>&1; then
+                pass "shell_$v power, VCD cycles $1..$2: $(grep -E '^Total' "$RUNDIR/reports/power/vcd_${1}_$2.design.rpt" | awk '{print $5" W"}')"
+            else fail "shell_$v VCD power $1..$2 (see openlane/logs/axi_shell_power_${v}_$STAMP.log)"; fi
+        done
     done
     rm -f "$d/variant.tcl" "$d/clk_latency.tcl"
     local core=${CORE_RUN:-$(core_best_run)} md=$HERE/logs/axi_overhead_$STAMP.md
     [ -f "$core/reports/power/vectorless.design.rpt" ] \
         || echo "  (no vectorless power report in ${core#"$OL"/} yet - run: tools/power.sh $core)"
-    if python3 "$KIT/tools/axi_overhead.py" "$core" "$d/runs/shell_thin" "$d/runs/shell_reg" --md "$md" \
+    if python3 "$KIT/tools/axi_overhead.py" "$core" "${runs[@]}" --md "$md" \
            --row "${ROW_RUN:-$OL/designs/gemm_row/runs/row_v1}"; then
         pass "overhead table: ${md#"$KIT"/}"
     else fail "tools/axi_overhead.py"; fi
@@ -901,18 +916,21 @@ st_axi_shell() {
 
 st_axi_gls() {
     need axi-sim
-    local core=${CORE_RUN:-$(core_best_run)} shape tag out=$HERE/logs/axi_gls_$STAMP
+    # AXI_GLS_WRAP (thin|reg|lean) and AXI_GLS_CG (0|1): the wrapper simulated around the core netlist
+    local wrap=${AXI_GLS_WRAP:-lean} cg=${AXI_GLS_CG:-1}
+    local core=${CORE_RUN:-$(core_best_run)} shape tag out=$HERE/logs/axi_gls_$STAMP b
     mkdir -p "$out"
-    say "axi-gls: GEMM_top (reg) RTL around the final netlist of ${core##*/}, rows gate-level"
+    say "axi-gls: GEMM_top ($wrap, CG=$cg) RTL around the final netlist of ${core##*/}, rows gate-level"
     # AXI_GLS_SHAPES="8,32,544 16,992,32" adds the other two shapes (~10 and ~22 min more)
     for shape in "" ${AXI_GLS_SHAPES:-}; do
         tag=${shape:+_M$(echo "$shape" | awk -F, '{print $1"K"$2"N"$3}')}
-        if WRAP=reg ROW=${ROW:-gl} TB_SHAPE="$shape" BUILD="$KIT/sim/build_gls_axireg$tag" OL=$OL \
+        b=$KIT/sim/build_gls_axi${wrap}$([ "$cg" = 1 ] && echo cg)$tag
+        if WRAP=$wrap AXIS_CG=$cg ROW=${ROW:-gl} TB_SHAPE="$shape" BUILD="$b" OL=$OL \
                "$KIT/sim/run_gls.sh" "$core" "$REPO" > "$out/gls$tag.log" 2>&1; then
-            pass "GEMM_top reg + ${core##*/}${shape:+ ($shape)}: OVERALL PASS, $(wc -l < "$KIT/sim/build_gls_axireg$tag/cycles_gls.txt") result events"
-        else fail "GEMM_top reg + ${core##*/}${shape:+ ($shape)} (see ${out#"$KIT"/}/gls$tag.log)"; fi
+            pass "GEMM_top $wrap CG=$cg + ${core##*/}${shape:+ ($shape)}: OVERALL PASS, $(wc -l < "$b/cycles_gls.txt") result events"
+        else fail "GEMM_top $wrap CG=$cg + ${core##*/}${shape:+ ($shape)} (see ${out#"$KIT"/}/gls$tag.log)"; fi
     done
-    NOTE="${core##*/}, logs in ${out#"$KIT"/}"
+    NOTE="$wrap CG=$cg, ${core##*/}, logs in ${out#"$KIT"/}"
     finish axi-gls
 }
 

@@ -25,10 +25,16 @@
 // loaded before they are used, and leaving the reset off saves area and the
 // reset fanout on P_WIDTH bits. They only load when a beat is taken, which
 // also keeps their toggling (power) down to the real traffic.
+//
+// P_CLOCK_GATE = 1: each data bank (main, skid) gets its clock through an
+// AxisClockGate whose enable is exactly that bank's load condition, so the
+// banks see no clock edge at all in the cycles they hold their value. Same
+// behaviour cycle for cycle; only the clock power of ~2 x P_WIDTH flops goes.
 // ---------------------------------------------------------------------------
 module AxisSkidBuffer
 #(
-    parameter integer P_WIDTH = 258
+    parameter integer P_WIDTH      = 258,
+    parameter integer P_CLOCK_GATE = 0
 )
 (
     input                   i_clk,
@@ -74,16 +80,29 @@ always @(posedge i_clk or negedge i_rst_n) begin
     end
 end
 
-always @(posedge i_clk) begin
-    if (w_m_free) begin
-        if (r_s_valid)
-            r_m_data <= r_s_data;
-        else if (w_s_accept)
-            r_m_data <= i_s_data;
-    end
-    if (~w_m_free & w_s_accept)
+// load conditions of the two data banks
+wire w_load_m = w_m_free & (r_s_valid | w_s_accept);    // main takes the skid beat or the new one
+wire w_load_s = ~w_m_free & w_s_accept;                 // skid parks the new beat
+
+generate
+if (P_CLOCK_GATE) begin : g_cg
+    wire w_gclk_m, w_gclk_s;
+    AxisClockGate u_cg_m (.i_clk(i_clk), .i_en(w_load_m), .o_gclk(w_gclk_m));
+    AxisClockGate u_cg_s (.i_clk(i_clk), .i_en(w_load_s), .o_gclk(w_gclk_s));
+    always @(posedge w_gclk_m)
+        r_m_data <= r_s_valid ? r_s_data : i_s_data;
+    always @(posedge w_gclk_s)
         r_s_data <= i_s_data;
 end
+else begin : g_en
+    always @(posedge i_clk) begin
+        if (w_load_m)
+            r_m_data <= r_s_valid ? r_s_data : i_s_data;
+        if (w_load_s)
+            r_s_data <= i_s_data;
+    end
+end
+endgenerate
 
 assign o_s_ready = w_s_ready;
 assign o_m_valid = r_m_valid;

@@ -188,55 +188,81 @@ Phần này biến core thành một IP có giao tiếp chuẩn: AXI4-Lite để
 và `axi_ip/` của repo gốc), nên ở đây chỉ chép wrapper đó sang `rtl_asic/axi/`, sửa cho hợp ASIC, rồi đo phần
 nó tốn thêm.
 
-    rtl_asic/axi/GEMM_top.v            top của IP, cùng tên, cổng, tham số và register map với bản KV260
-    rtl_asic/axi/GemmAxiShell.v        mọi thứ trừ core: ResetSync, thanh ghi AXI4-Lite, cờ busy/done, 3 cổng AXIS
-    rtl_asic/axi/AxiLiteControlRegs.v  thanh ghi 0x00-0x0C, handshake như template Xilinx của bản KV260
-    rtl_asic/axi/AxisSkidBuffer.v      register slice hai ô cho một luồng valid/ready
+    rtl_asic/axi/GEMM_top.v            top của IP, cùng tên, cổng (thêm irq), tham số với bản KV260
+    rtl_asic/axi/GemmAxiShell.v        mọi thứ trừ core: ResetSync, thanh ghi AXI4-Lite, cờ busy/done,
+                                       bộ đếm chu kỳ, 3 cổng AXIS
+    rtl_asic/axi/AxiLiteControlRegs.v  thanh ghi 0x00-0x24, handshake như template Xilinx của bản KV260
+    rtl_asic/axi/AxisSkidBuffer.v      register slice hai ô (mọi cổng ra từ flop)
+    rtl_asic/axi/AxisFwdSlice.v        register slice một ô (TREADY qua một cổng logic)
+    rtl_asic/axi/AxisClockGate.v       clock gate cho dãy flop dữ liệu (cell dlclkp của sky130)
 
-Register map giữ nguyên nên driver KV260 (FPGA_GEMM.cpp) và testbench gốc dùng được ngay. Khác bản KV260 ở
-hai chỗ. Thứ nhất, thanh ghi 0x04-0x0C chỉ lưu số bit core dùng (9, 5, 5), bit cao đọc ra 0. Phần mềm ghi giá
-trị hợp lệ thì đọc lại vẫn đúng như cũ. Thứ hai, có ResetSync trên S_AXI_ARESETN (bản FPGA có proc_sys_reset
-lo việc này).
+Register map. 0x00-0x0C giữ nguyên bản KV260 nên driver KV260 (FPGA_GEMM.cpp) và testbench gốc dùng được
+ngay. Phần mới cần bus địa chỉ 6 bit của IP; testbench gốc nối 4 bit nên không chạm tới chúng.
 
-Hai biến thể cổng stream, chọn bằng `GEMM_AXIS_REG` trong gemm_asic_cfg.vh (mặc định 1):
+| Địa chỉ | Tên | Kiểu | Nội dung |
+|---|---|---|---|
+| 0x00 | SHIFT / STATUS | RW | ghi [9:0] shift, [16] xoá done; đọc [9:0] shift, [24] busy, [25] done, [26] idle, [27] clear được nhận, [28] clear bị từ chối |
+| 0x04 | ROW_COUNT | RW | [8:0] số hàng (F_length) |
+| 0x08 | K_BLOCKS | RW | [4:0] số khối K |
+| 0x0C | N_BLOCKS | RW | [4:0] số khối N |
+| 0x10 | IRQ_ENABLE | RW | [0] ngắt khi job xong, [1] ngắt khi có lỗi |
+| 0x14 | IRQ_STATUS | R/W1C | [0] job xong, [1] có lỗi; ghi 1 để xoá |
+| 0x18 | ERROR | R/W1C | [0] beat feature thiếu TSTRB, [1] beat weight thiếu TSTRB, [2] lệnh xoá done bị từ chối vì đang bận |
+| 0x1C | JOB_CYCLES | RO | số chu kỳ của job gần nhất, từ beat vào đầu tiên tới beat kết quả cuối (job không chồng nhau, như driver KV260 chạy) |
+| 0x20 | IP_ID | RO | 0x47454D4D ("GEMM") |
+| 0x24 | IP_VERSION | RO | [31:24] major, [23:16] minor, [15:8] kích thước mảng, [7:0] độ rộng dữ liệu |
 
-| | thin (0) | reg (1) |
-|---|---|---|
-| Cổng AXIS | nối thẳng vào core như bản KV260 | qua AxisSkidBuffer, mọi cổng ra/vào từ flop |
-| TREADY | tổ hợp từ core và từ TSTRB | ra từ flop |
-| Độ trễ thêm | 0 | 1 chu kỳ mỗi luồng, thông lượng vẫn 1 beat/chu kỳ |
-| Timing ở cổng | bằng timing cổng của core (core_v11 đang miễn) | ngắn, không cần miễn |
+Chân `irq` = IRQ_STATUS AND IRQ_ENABLE, mức cao, ra từ flop. Thanh ghi 0x04-0x0C chỉ lưu số bit core dùng (9, 5,
+5), bit cao đọc ra 0; phần mềm ghi giá trị hợp lệ thì đọc lại vẫn như cũ. Có ResetSync trên S_AXI_ARESETN (bản
+FPGA có proc_sys_reset lo việc này).
 
-Beat có TSTRB không đủ byte (driver KV260 không bao giờ gửi) không bao giờ vào core, và luồng dừng luôn ở đó
-cho tới khi reset, như bản KV260. Khác ở chỗ: với thin, TREADY ở mức thấp nên master vẫn giữ beat; với reg,
-slice đã nhận beat đó rồi mới dừng. Cả hai trường hợp job đều không xong. Cờ busy/done lấy theo handshake ở
-cổng của IP, để "done" nghĩa là beat kết quả cuối đã ra khỏi IP chứ không chỉ rời core. TREADY của reg ở mức
-thấp suốt lúc reset và một chu kỳ sau đó, vì reset bên trong nhả muộn hơn cổng hai chu kỳ (ResetSync).
+Biến thể cổng stream, chọn bằng `GEMM_AXIS_REG` và `GEMM_AXIS_CG` trong gemm_asic_cfg.vh:
+
+| | thin (REG=0) | reg (REG=1) | lean (REG=2) |
+|---|---|---|---|
+| Feature / weight vào | nối thẳng vào core | AxisSkidBuffer (2 ô) | AxisFwdSlice (1 ô) |
+| Result ra | nối thẳng ra core | AxisSkidBuffer | AxisSkidBuffer |
+| TREADY của luồng vào | tổ hợp từ core và TSTRB | ra từ flop | qua một cổng logic từ ready của core |
+| Flop thêm | 0 | khoảng 1550 | khoảng 1030 |
+| Timing ở cổng | bằng timing cổng của core (core_v11 đang miễn) | ngắn | ngắn |
+
+`GEMM_AXIS_CG=1` (chỉ với reg, lean) đặt clock gate trước mỗi dãy flop dữ liệu: dãy nào không nạp beat thì không
+có cạnh clock. Hành vi giữ nguyên từng chu kỳ, chỉ bớt công suất clock. Lý do lean chỉ cần slice một ô ở phía
+vào: dữ liệu feature/weight đi thẳng vào chân ghi của SRAM, còn ready của core là phép so sánh bộ đếm trên flop
+(In_buffer.v), nên phía vào của core vốn gần như đã có thanh ghi. Phía ra đi qua bộ dịch tổ hợp nên giữ skid hai ô.
+
+Beat có TSTRB không đủ byte (driver KV260 không bao giờ gửi) không bao giờ vào core, luồng dừng ở đó cho tới khi
+reset, và bit ERROR[0] hoặc [1] bật lên. Với thin, TREADY ở mức thấp nên master vẫn giữ beat; với reg và lean,
+slice đã nhận beat đó rồi mới dừng. Lỗi chỉ được ghi một lần ở chu kỳ đầu tiên beat xuất hiện, nên master cứ giữ
+beat thì ISR xoá (W1C) xong bit vẫn ở 0, irq không bật lại liên tục. Cờ busy/done lấy theo handshake ở cổng của IP, để "done" nghĩa là beat kết
+quả cuối đã ra khỏi IP. TREADY của các slice ở mức thấp suốt lúc reset và một chu kỳ sau đó, vì reset bên trong
+nhả muộn hơn cổng hai chu kỳ (ResetSync).
 
 ### Chạy
 
 | Lệnh | Làm gì | Dấu hiệu PASS | Thời gian |
 |---|---|---|---|
-| `openlane/run_flow.sh axi-sim` | Test riêng skid buffer; testbench gốc với thin, reg, reg + model OpenRAM (3 kích thước) | `AXI IP RTL: ALL PASS` | chưa kiểm, ước 10 phút |
-| `openlane/run_flow.sh axi-shell` | Harden riêng GemmAxiShell (thin, reg), mỗi biến thể hai run (đo clock latency rồi chạy thật), đo công suất, in bảng overhead so với core | các run sạch DRC/LVS/antenna, có bảng | chưa kiểm |
-| `openlane/run_flow.sh axi-gls` | Testbench gốc trên GEMM_top (reg) bọc netlist cuối của core, row gate-level | OVERALL PASS | khoảng 6 phút một kích thước |
+| `openlane/run_flow.sh axi-sim` | Test riêng hai loại slice (có và không clock gating); test shell với model core cho thin, reg, reg+cg, lean, lean+cg (thanh ghi, ngắt, lỗi, JOB_CYCLES, dữ liệu dưới backpressure ngẫu nhiên); testbench gốc với thin, reg, reg+cg, lean, lean+cg, và lean+cg + model OpenRAM (3 kích thước) | `AXI IP RTL: ALL PASS` | lần đầu 5:27 (khi chỉ có thin, reg); giờ nhiều hơn, chưa đo |
+| `openlane/run_flow.sh axi-shell` | Harden riêng GemmAxiShell cho thin, reg, lean, lean_cg (`AXI_SHELL_VARIANTS` để đổi), mỗi biến thể hai run (đo clock latency rồi chạy thật); công suất vectorless và theo VCD (chu kỳ 2300-3200 như core, và cả testbench); in bảng overhead | các run sạch DRC/LVS, có bảng | lần 2 với 2 biến thể: 27 phút; 4 biến thể cộng VCD chắc gần 1 giờ |
+| `openlane/run_flow.sh axi-gls` | Testbench gốc trên GEMM_top (mặc định lean + clock gating; `AXI_GLS_WRAP`, `AXI_GLS_CG` để đổi) bọc netlist cuối của core, row gate-level | OVERALL PASS | 5:50 một kích thước |
 
 Chạy riêng phần RTL không cần OpenLane: `sim/run_axi.sh`. Chọn wrapper cho các script cũ bằng biến WRAP:
 
-    WRAP=thin sim/run_system.sh asic          # hoặc reg; fpga (mặc định) là wrapper của repo KV260
-    WRAP=reg ROW=gl sim/run_gls.sh ~/OpenLane/designs/gemm_core/runs/core_v11
+    WRAP=lean AXIS_CG=1 sim/run_system.sh asic    # thin, reg, lean; fpga (mặc định) là wrapper của repo KV260
+    WRAP=lean AXIS_CG=1 ROW=gl sim/run_gls.sh ~/OpenLane/designs/gemm_core/runs/core_v11
 
-Điều mong đợi ở axi-sim: thin trùng chu kỳ từng sự kiện kết quả với RTL KV260, vì logic giống hệt. reg ra cùng
-dãy kết quả, trễ hơn vài chu kỳ; script in khoảng lệch. Testbench gốc chặn result 1/7 chu kỳ và có khoảng trống
+Điều mong đợi ở axi-sim: thin trùng chu kỳ từng sự kiện kết quả với RTL KV260, vì logic giống hệt. reg, lean ra
+cùng dãy kết quả, trễ hơn vài chu kỳ; script in khoảng lệch. Testbench gốc chặn result 1/7 chu kỳ và có khoảng trống
 ở hai luồng vào, nên skid buffer được thử cả lúc đầy lẫn lúc rỗng. tb_axis_skid.v thử thêm valid/ready ngẫu
 nhiên 80 000 beat.
 
 ### Đọc bảng overhead
 
-axi-shell ghi bảng vào openlane/logs/axi_overhead_<thời điểm>.md (tools/axi_overhead.py). Các cột là core_v11,
-shell thin, shell reg, và shell tính theo phần trăm của core. Cần báo cáo công suất vectorless của core
-(`tools/power.sh <run core>` ghi reports/power/vectorless.design.rpt). Chưa có thì cột công suất của core để
-trống.
+axi-shell ghi bảng vào openlane/logs/axi_overhead_<thời điểm>.md (tools/axi_overhead.py). Cột đầu là core_v11,
+sau đó mỗi biến thể một cột (shell_thin, shell_reg, shell_lean, shell_lean_cg, theo `AXI_SHELL_VARIANTS`). Ô của
+shell ghi dạng `giá trị (x %)`, x là phần trăm so với core ở cùng dòng. Ô "-" là không có số trong thư mục run;
+script không bao giờ tự điền. Công suất của core lấy từ reports/power/ của run core_v11 (`tools/power.sh <run
+core>` cho vectorless, `tools/power.sh <run core> --vcd 2300 3200` cho VCD). Chưa có thì cột core để trống.
 
 - Diện tích: số cell sky130_fd_sc_hd sau synthesis nhân với diện tích từng cell trong liberty tt (script tự tìm
   dưới $PDK_ROOT, ~/.ciel, ~/.volare, hoặc `--lib`). Macro SRAM không bao giờ lọt vào con số này. Phía core được
@@ -244,17 +270,31 @@ trống.
   core thôi chỉ là một phần nhỏ, so với nó thì phần trăm overhead bị phóng to nhiều lần. Die của run shell do
   ~1780 chân quyết định nên không có nghĩa (600 x 1500 um; bản 300 um đầu tiên nghẽn route ở mép Tây với reg).
   Dòng "placed area" (trước khi chèn filler) chia cho die core_v11 là phần die IP tốn thêm nếu đặt shell sát core.
+  Cell dlclkp của bản _cg được tính như mọi cell khác.
 - Timing: slack setup và hold ở cả ba corner, tách đường bên trong khối với đường chạm cổng. Với core_v11, đường
   chạm cổng đang được miễn (chưa có pad ring) nên chỉ đọc các dòng "inside the block". Shell dùng ngân sách cổng 30 % chu kỳ ở cả hai phía
   (GEMM_SHELL_IO_PCT trong config). Độ trễ ở cổng tính theo clock latency của chính shell, đo ở run hiệu chỉnh
   shell_<biến thể>_cal (cùng cách core.sdc làm với core). Không làm vậy thì mọi input của reg đều vi phạm hold
-  bằng đúng latency, và resizer chèn delay cell vào cả ~560 input, làm phồng diện tích lẫn công suất. Dòng
-  "violating setup paths at a port" cho thấy thin và reg khác nhau ở cổng.
-- Công suất: OpenSTA activity mặc định ở cả hai bên, cùng cách với con số 2,89 W của core. Con số 1,53 W của
-  core (VCD) được in để tham khảo. Shell chưa có số theo VCD.
+  bằng đúng latency, và resizer chèn delay cell vào cả ~560 input, làm phồng diện tích lẫn công suất. Latency đo
+  ở corner typical nên hold ở cổng của corner Slowest có thể âm vài trăm ps (lần chạy 2: reg -0,27 ns); đó là do
+  cách đặt ràng buộc, không phải lỗi trong khối. Dòng "violating setup paths at a port" cho thấy các biến thể khác
+  nhau ở cổng.
+- Công suất, vectorless: OpenSTA activity mặc định ở cả hai bên, cùng cách với con số 2,89 W của core. Cách này
+  coi mọi flop đều đổi trạng thái như nhau, nên không thấy được clock gating: bản _cg chỉ khác ở dòng VCD.
+- Công suất, VCD: chạy testbench gốc trên GEMM_top với netlist cuối của shell và RTL của core, lấy activity từng
+  net của shell, rồi OpenSTA tính như với core. Có hai cửa sổ. Chu kỳ 2300..3200 là cửa sổ core_v11 đã dùng (pha
+  tính của job 2), nên ô `(x %)` ở dòng này so cùng một khoảng thời gian; cộng số của shell với số của core là
+  công suất của cả IP trong khoảng đó. Cửa sổ 0..end là cả testbench (nạp dữ liệu, tính, đọc kết quả của hai job);
+  core không có số cho cửa sổ này nên ô core để trống, chỉ so các biến thể với nhau. Clock gating chỉ bớt công
+  suất ở những chu kỳ một cổng stream không nạp beat; tỷ lệ chu kỳ đó ở hai cửa sổ khác nhau, nên phần bớt được ở
+  hai dòng cũng khác nhau.
 
 Giới hạn của cách đo này: shell được harden riêng nên cây clock của nó không cân với cây clock của core, và
 path giữa shell với core chưa được phân tích thật. Muốn có timing của cả IP thì cần bước 3 bên dưới.
+
+Với bản _cg nên mở thêm log CTS của run (`logs/cts/*cts.log`, dòng `Clock net ... has N sinks`): mỗi clock gate
+phải có một dòng riêng cho net GCLK của nó. Nếu chỉ thấy net S_AXI_ACLK thì TritonCTS không dựng cây sau clock
+gate, net GCLK lớn (khoảng 258 flop) chỉ được resizer chèn buffer thường, và slack hold bên trong khối sẽ là chỗ lộ ra.
 
 ### Bước 3 (chưa làm): chạy phẳng GEMM_top
 

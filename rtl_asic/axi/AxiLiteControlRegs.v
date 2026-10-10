@@ -1,8 +1,9 @@
 `timescale 1ns / 1ps
 // ---------------------------------------------------------------------------
-// AxiLiteControlRegs - ASIC copy of axi_ip/Control_register_file.v (KV260).
+// AxiLiteControlRegs - ASIC copy of axi_ip/Control_register_file.v (KV260),
+// extended with interrupt, error, cycle-counter and ID registers.
 //
-// Same register map, same handshake, same reset values, so the KV260 driver
+// 0x00..0x0C are the KV260 registers, bit for bit, so the KV260 driver
 // (FPGA_GEMM.cpp, Defines.h) and the original testbench talk to it unchanged:
 //
 //   0x00  W: [9:0] shift, [16] clear done (self-clearing pulse)
@@ -12,11 +13,26 @@
 //   0x08  [4:0] K block count (F_width_block_num)
 //   0x0C  [4:0] N block count (W_width_block_num)
 //
-// One difference, on purpose: the FPGA template kept all 32 bits of
-// registers 1..3 because they are readable, i.e. 96 flops nobody uses.
-// Here only the bits the core takes are stored and the rest read as 0.
-// Software that writes the values it means (row count < 512, block counts
-// < 32) reads back exactly what it wrote, as before.
+// New (need the 6-bit address bus of the IP; with P_AXI_LITE_ADDR_WIDTH = 4,
+// as the KV260 testbench instantiates it, they are simply out of reach):
+//
+//   0x10  IRQ_ENABLE   RW    [0] job done, [1] error
+//   0x14  IRQ_STATUS   R/W1C [0] job done, [1] error  (write 1 to clear a bit;
+//                            an event in the same cycle wins over the clear)
+//   0x18  ERROR        R/W1C [0] feature beat with TSTRB not all ones
+//                            [1] weight beat with TSTRB not all ones
+//                            [2] clear-done write refused because a job ran
+//   0x1C  JOB_CYCLES   RO    clock cycles of the last (or running) job, from
+//                            its first accepted input beat to its last result
+//                            beat, saturating at 2^32-1
+//   0x20  IP_ID        RO    0x47454D4D ("GEMM")
+//   0x24  IP_VERSION   RO    [31:24] major, [23:16] minor, [15:8] array size,
+//                            [7:0] data width
+//   o_irq = |(IRQ_STATUS & IRQ_ENABLE), registered, active high, level.
+//
+// Registers 1..3 store only the bits the core takes (the FPGA template kept
+// all 32, i.e. 96 flops nobody uses); the rest read as 0. Software that writes
+// the values it means reads back exactly what it wrote, as before.
 //
 // The write/read channel logic is the Xilinx AXI4-Lite slave template the
 // FPGA version used (awready and wready together once AWVALID and WVALID
@@ -27,7 +43,8 @@
 module AxiLiteControlRegs
 #(
     parameter integer P_AXI_LITE_DATA_WIDTH = 32,
-    parameter integer P_AXI_LITE_ADDR_WIDTH = 4
+    parameter integer P_AXI_LITE_ADDR_WIDTH = 6,
+    parameter [31:0]  P_IP_VERSION          = {8'd1, 8'd1, 8'd32, 8'd8}
 )
 (
     output [9:0]    o_cfg_shift,
@@ -40,6 +57,10 @@ module AxiLiteControlRegs
     input           i_job_idle,
     input           i_job_clear_accepted,
     input           i_job_clear_busy_error,
+    input           i_job_done_event,       // pulse: last result beat left the IP
+    input  [1:0]    i_partial_beat,         // pulse: [0] feature, [1] weight beat with partial TSTRB
+    input  [31:0]   i_job_cycles,
+    output          o_irq,
 
     input                                   S_AXI_ACLK,
     input                                   S_AXI_ARESETN,
@@ -64,8 +85,10 @@ module AxiLiteControlRegs
     input                                   S_AXI_RREADY
 );
 
-// word address = addr[3:2] for a 32-bit bus (template: ADDR_LSB = 2, 1 extra bit)
+// word index = addr[ADDR_WIDTH-1:2] for a 32-bit bus (template: ADDR_LSB = 2)
 localparam integer LP_ADDR_LSB = (P_AXI_LITE_DATA_WIDTH / 32) + 1;
+localparam integer LP_IDX_W    = P_AXI_LITE_ADDR_WIDTH - LP_ADDR_LSB;
+localparam [31:0]  LP_IP_ID    = 32'h4745_4D4D;        // "GEMM"
 
 reg [P_AXI_LITE_ADDR_WIDTH-1:0] r_awaddr;
 reg                             r_awready;
@@ -81,11 +104,15 @@ reg [9:0]   r_shift;
 reg [8:0]   r_row_count;
 reg [4:0]   r_k_block_count;
 reg [4:0]   r_n_block_count;
+reg [1:0]   r_irq_enable;
+reg [1:0]   r_irq_status;
+reg [2:0]   r_error;
+reg         r_irq;
 
-wire [1:0]  w_waddr = r_awaddr[LP_ADDR_LSB+1:LP_ADDR_LSB];
-wire [1:0]  w_raddr = r_araddr[LP_ADDR_LSB+1:LP_ADDR_LSB];
-wire        w_wren  = r_wready & S_AXI_WVALID & r_awready & S_AXI_AWVALID;
-wire        w_rden  = r_arready & S_AXI_ARVALID & ~r_rvalid;
+wire [LP_IDX_W-1:0] w_waddr = r_awaddr[P_AXI_LITE_ADDR_WIDTH-1:LP_ADDR_LSB];
+wire [LP_IDX_W-1:0] w_raddr = r_araddr[P_AXI_LITE_ADDR_WIDTH-1:LP_ADDR_LSB];
+wire                w_wren  = r_wready & S_AXI_WVALID & r_awready & S_AXI_AWVALID;
+wire                w_rden  = r_arready & S_AXI_ARVALID & ~r_rvalid;
 
 // ---- write address / data handshake (template behaviour)
 always @(posedge S_AXI_ACLK) begin
@@ -128,33 +155,54 @@ always @(posedge S_AXI_ACLK) begin
         r_bvalid <= 1'b0;
 end
 
-// ---- registers, byte strobes as in the template
+// ---- KV260 registers, byte strobes as in the template
 always @(posedge S_AXI_ACLK) begin
     if (~S_AXI_ARESETN) begin
         r_shift         <= 10'd0;
         r_row_count     <= 9'd0;
         r_k_block_count <= 5'd0;
         r_n_block_count <= 5'd0;
+        r_irq_enable    <= 2'd0;
     end
     else if (w_wren) begin
-        case (w_waddr)
-            2'h0: begin
-                if (S_AXI_WSTRB[0]) r_shift[7:0] <= S_AXI_WDATA[7:0];
-                if (S_AXI_WSTRB[1]) r_shift[9:8] <= S_AXI_WDATA[9:8];
-            end
-            2'h1: begin
-                if (S_AXI_WSTRB[0]) r_row_count[7:0] <= S_AXI_WDATA[7:0];
-                if (S_AXI_WSTRB[1]) r_row_count[8]   <= S_AXI_WDATA[8];
-            end
-            2'h2: if (S_AXI_WSTRB[0]) r_k_block_count <= S_AXI_WDATA[4:0];
-            default: if (S_AXI_WSTRB[0]) r_n_block_count <= S_AXI_WDATA[4:0];
-        endcase
+        if (w_waddr == 0) begin
+            if (S_AXI_WSTRB[0]) r_shift[7:0] <= S_AXI_WDATA[7:0];
+            if (S_AXI_WSTRB[1]) r_shift[9:8] <= S_AXI_WDATA[9:8];
+        end
+        if (w_waddr == 1) begin
+            if (S_AXI_WSTRB[0]) r_row_count[7:0] <= S_AXI_WDATA[7:0];
+            if (S_AXI_WSTRB[1]) r_row_count[8]   <= S_AXI_WDATA[8];
+        end
+        if (w_waddr == 2 && S_AXI_WSTRB[0]) r_k_block_count <= S_AXI_WDATA[4:0];
+        if (w_waddr == 3 && S_AXI_WSTRB[0]) r_n_block_count <= S_AXI_WDATA[4:0];
+        if (w_waddr == 4 && S_AXI_WSTRB[0]) r_irq_enable    <= S_AXI_WDATA[1:0];
     end
 end
 
 // clear-done pulse: a write to 0x00 with bit 16 set (WSTRB not looked at,
 // same as the FPGA version)
-assign o_job_start_clear = w_wren & (w_waddr == 2'h0) & S_AXI_WDATA[16];
+assign o_job_start_clear = w_wren & (w_waddr == 0) & S_AXI_WDATA[16];
+
+// ---- sticky status: set by events, cleared by writing 1 (event wins)
+wire       w_w1c_ok   = w_wren & S_AXI_WSTRB[0];
+wire [1:0] w_clr_irq  = (w_w1c_ok && w_waddr == 5) ? S_AXI_WDATA[1:0] : 2'b00;
+wire [2:0] w_clr_err  = (w_w1c_ok && w_waddr == 6) ? S_AXI_WDATA[2:0] : 3'b000;
+wire [2:0] w_set_err  = {i_job_clear_busy_error, i_partial_beat};
+wire [1:0] w_set_irq  = {|w_set_err, i_job_done_event};
+
+always @(posedge S_AXI_ACLK) begin
+    if (~S_AXI_ARESETN) begin
+        r_irq_status <= 2'b00;
+        r_error      <= 3'b000;
+        r_irq        <= 1'b0;
+    end
+    else begin
+        r_irq_status <= (r_irq_status & ~w_clr_irq) | w_set_irq;
+        r_error      <= (r_error & ~w_clr_err) | w_set_err;
+        r_irq        <= |(r_irq_status & r_irq_enable);
+    end
+end
+assign o_irq = r_irq;
 
 // ---- read channel (template behaviour)
 always @(posedge S_AXI_ACLK) begin
@@ -182,11 +230,18 @@ end
 reg [31:0] w_rdata_next;
 always @(*) begin
     case (w_raddr)
-        2'h0:    w_rdata_next = {3'b000, i_job_clear_busy_error, i_job_clear_accepted,
+        0:       w_rdata_next = {3'b000, i_job_clear_busy_error, i_job_clear_accepted,
                                  i_job_idle, i_job_done, i_job_busy, 14'b0, r_shift};
-        2'h1:    w_rdata_next = {23'b0, r_row_count};
-        2'h2:    w_rdata_next = {27'b0, r_k_block_count};
-        default: w_rdata_next = {27'b0, r_n_block_count};
+        1:       w_rdata_next = {23'b0, r_row_count};
+        2:       w_rdata_next = {27'b0, r_k_block_count};
+        3:       w_rdata_next = {27'b0, r_n_block_count};
+        4:       w_rdata_next = {30'b0, r_irq_enable};
+        5:       w_rdata_next = {30'b0, r_irq_status};
+        6:       w_rdata_next = {29'b0, r_error};
+        7:       w_rdata_next = i_job_cycles;
+        8:       w_rdata_next = LP_IP_ID;
+        9:       w_rdata_next = P_IP_VERSION;
+        default: w_rdata_next = 32'b0;
     endcase
 end
 

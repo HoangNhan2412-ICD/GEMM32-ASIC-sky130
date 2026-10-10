@@ -9,8 +9,6 @@
 #       NETLIST and the core's RTL; nets of the shell dumped for testbench cycles [C0, C1).
 #       C1 = end: up to the end of the testbench. 2300 3200 = the window of the core's
 #       VCD number (compute phase of job 2), so the two can be added.
-#   NOCLK=1 tools/axi_shell_power.sh <run> --vcd C0 C1   same, but STA without the clock (all
-#       activities from the VCD, see tools/power/shell_power.tcl); report vcd_C0_C1_noclk
 # Output: <run>/reports/power/{vectorless,vcd_C0_C1}.design.rpt (+ .log)
 # Needs iverilog and the sky130 cell models (PDK_ROOT / ~/.ciel / ~/.volare) for --vcd.
 # ---------------------------------------------------------------------------
@@ -35,7 +33,6 @@ OUT=$RUN/reports/power; mkdir -p "$OUT"
 sta_power() {   # sta_power <name> [activity file]
     local env=(-e SHELL_FINAL="$RUN/results/final" -e OUT="$OUT/$1" -e PDK_ROOT="$PDK_ROOT")
     [ -n "${2:-}" ] && env+=(-e ACT="$2")
-    [ "${NOCLK:-0}" = 1 ] && env+=(-e NOCLK=1)
     docker run --rm -u "$(id -u):$(id -g)" -v "$HOME:$HOME" -v "$PDK_ROOT:$PDK_ROOT" -v "$KIT:$KIT" -v "$OL:$OL" \
         "${env[@]}" "$IMG" sta -no_splash -exit "$KIT/tools/power/shell_power.tcl" 2>&1 | tee "$OUT/$1.log"
     grep -E "^Total" "$OUT/$1.design.rpt" || { echo "no Total line in $OUT/$1.design.rpt"; exit 1; }
@@ -48,7 +45,6 @@ fi
 
 # ---- simulation with the shell gate netlist
 name=vcd_${C0}_$C1
-[ "${NOCLK:-0}" = 1 ] && name=${name}_noclk
 B=$KIT/sim/build_shell_power/$(basename "$RUN")_$name; mkdir -p "$B"
 P=""
 for r in "${PDK_ROOT:-}" "$HOME/.ciel" "$HOME/.volare" "$OL/pdks"; do

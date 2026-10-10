@@ -228,7 +228,8 @@ def collect(run, areas, row_area=None):
         "pwr": power_total(run),
         "pwr_vcd": {os.path.basename(f)[len("vcd_"):-len(".design.rpt")]:
                     power_total(run, os.path.basename(f)[:-len(".design.rpt")])
-                    for f in sorted(glob.glob(os.path.join(run, "reports", "power", "vcd_*.design.rpt")))},
+                    for f in sorted(glob.glob(os.path.join(run, "reports", "power", "vcd_*.design.rpt")))
+                    if "_noclk" not in f},   # left over from a dropped experiment (shell_power.tcl)
         "io": io_paths(run),
     }
 
@@ -320,9 +321,7 @@ def main():
     windows = sorted({w for d in runs for w in d["pwr_vcd"]})
     for w in windows:
         cw = core["pwr_vcd"].get(w)
-        c0, c1 = w.split("_")[:2]
-        how = ", STA without clock (NOCLK)" if w.endswith("_noclk") else ""
-        line(f"power from VCD, cycles {c0}..{c1}{how} (W)", cw,
+        line(f"power from VCD, cycles {w.replace('_', '..')} (W)", cw,
              [d["pwr_vcd"].get(w) for d in shells], ".4g", cw)
 
     head = ["", f"core ({core['name']})"] + [d["name"] for d in shells]

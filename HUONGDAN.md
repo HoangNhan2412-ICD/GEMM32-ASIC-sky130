@@ -303,10 +303,9 @@ core>` cho vectorless, `tools/power.sh <run core> --vcd 2300 3200` cho VCD). Ch�
   Chỗ cần biết với bản _cg: trong chu kỳ 2300..3200 cả bốn chân GCLK đứng yên (0 lần đổi), vậy mà OpenSTA của image
   OpenLane vẫn tính flop sau clock gate và net GCLK như đang nhận clock đủ mọi chu kỳ (flop sau gate tốn đúng bằng
   flop nối thẳng S_AXI_ACLK; đặt activity rất nhỏ thay cho 0 cũng không đổi). Ở cửa sổ 0..end, khi GCLK có đổi, nó
-  tính đúng (flop sau gate tốn khoảng 1/10). Nên số 2300..3200 của bản _cg theo cách này là cận trên. Cách đo thay
-  thế: `NOCLK=1 tools/axi_shell_power.sh <run> --vcd C0 C1` xoá clock trong STA để mọi chân, kể cả chân clock, lấy
-  activity từ VCD (báo cáo vcd_C0_C1_noclk, dòng riêng trong bảng). Cách này chỉ dùng được khi kiểm tra trên một
-  biến thể không có clock gating cho ra gần cùng số với cách thường.
+  tính đúng (flop sau gate tốn khoảng 1/10, đã kiểm từng instance). Nên số 2300..3200 của bản _cg là cận trên. Đã
+  thử xoá clock trong STA để mọi chân lấy activity từ VCD, nhưng khi không có clock thì phần switching ra đúng 1e-8
+  lần giá trị thường, nên bỏ cách đó.
   Có hai cửa sổ. Chu kỳ 2300..3200 là cửa sổ core_v11 đã dùng (pha
   tính của job 2; theo log testbench, không có beat nào qua cả ba cổng stream trong khoảng này), nên ô `(x %)` ở dòng này so cùng một khoảng thời gian; cộng số của shell với số của core là
   công suất của cả IP trong khoảng đó. Cửa sổ 0..end là cả testbench (nạp dữ liệu, tính, đọc kết quả của hai job);
@@ -321,6 +320,37 @@ Với bản _cg nên mở thêm log CTS của run (`logs/cts/*cts.log`, dòng `C
 phải có một dòng riêng cho net GCLK của nó. Nếu chỉ thấy net S_AXI_ACLK thì TritonCTS không dựng cây sau clock
 gate, net GCLK lớn (khoảng 258 flop) chỉ được resizer chèn buffer thường, và slack hold bên trong khối sẽ là chỗ lộ ra.
 Lần 10/10 TritonCTS dựng đủ: S_AXI_ACLK 132 sink, bốn net GCLK 257-258 sink mỗi net.
+
+### Kết quả 10/10/2026
+
+core_v11 so với shell của bốn biến thể (openlane/logs/axi_overhead_20261010-133311.md). Phần trăm là so với core
+ở cùng dòng; diện tích core gồm cả 32 row macro.
+
+| | thin | reg | lean | lean_cg |
+|---|---|---|---|---|
+| Cell sau synthesis | 1 366 (0,20 %) | 6 297 (0,93 %) | 4 114 (0,61 %) | 2 201 (0,32 %) |
+| Flop | 123 | 1 676 | 1 158 | 1 158 |
+| Diện tích std-cell (um²) | 10 372 (0,14 %) | 72 708 (0,95 %) | 47 632 (0,62 %) | 32 765 (0,43 %) |
+| Placed area (um², % die core) | 51 858 (0,07 %) | 159 101 (0,22 %) | 123 163 (0,17 %) | 100 931 (0,14 %) |
+| Setup trong khối, Slowest (ns) | +5,31 | +0,95 | +0,40 | +3,01 |
+| Setup ở cổng, Typical (ns) | +2,11 | +3,39 | +2,18 | +2,16 |
+| Hold trong khối, Typical (ns) | +0,36 | +0,30 | +0,30 | +0,31 |
+| Công suất vectorless (mW) | 3,86 (0,13 %) | 44,4 (1,54 %) | 32,7 (1,13 %) | 6,91 (0,24 %) |
+| Công suất VCD, cả testbench (mW) | 1,79 | 14,3 | 9,87 | 3,02 |
+| Công suất VCD, chu kỳ 2300..3200 (mW) | 3,13 (0,20 %) | 16,6 (1,09 %) | 11,9 (0,78 %) | ≤ 12,1 (≤ 0,79 %) |
+| Chu kỳ trễ so với KV260 | 0 | 1-3 | 1-3 | 1-4 |
+
+Core để so: 7 684 240 um² std-cell, 105 821 flop, die 72,3 mm², 2,89 W vectorless, 1,529 W VCD ở 2300..3200. Cả
+bốn biến thể giữ một beat mỗi chu kỳ trên mỗi luồng. DRC và LVS sạch; antenna còn 6 / 56 / 38 / 12 chân (run đo
+đạc). Chức năng: axi-sim ALL PASS (thin trùng chu kỳ với RTL KV260 ở cả 258 sự kiện kết quả), axi-gls lean_cg bọc
+netlist cuối của core_v11 PASS.
+
+Đọc gọn: lớp AXI tốn dưới 1 % diện tích std-cell của core ở mọi biến thể, và dưới 1 % công suất ở mọi biến thể trừ
+reg (1,1-1,5 %). Clock gating trên lean bớt 31 % diện
+tích (hết mux enable) và 69 % công suất theo VCD cả testbench (9,87 xuống 3,02 mW). Ô ≤ 12,1 mW là cận trên vì giới
+hạn của OpenSTA nói ở trên: trong cửa sổ đó cả ba luồng đứng yên và mọi clock gate đều đóng, nên số thật thấp hơn
+(riêng 1030 flop sau các clock gate đã chiếm khoảng 4,4 mW trong con số đó). Slack âm ở cổng tại corner Slowest và hold -0,08 ns ở cổng của lean_cg là do ràng buộc ở biên khối (mục Timing
+ở trên), sẽ có số thật ở bước 3.
 
 ### Bước 3 (chưa làm): chạy phẳng GEMM_top
 

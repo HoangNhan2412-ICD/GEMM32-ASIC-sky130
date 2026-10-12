@@ -30,6 +30,10 @@ lappend ::env(SYNTH_DEFINES) GEMM_ICG_X4
 # branch still had ~5.2 ns of latency against ~2.8 ns (ip_shell4, dlclkp_4).
 # The pins of every bus follow the bit order (gen_ip_files.py checks it), so
 # each group sits in one stretch of the macro.
+# The IP (gemm_ip) uses the macro of run ip_shell5, built with these settings
+# (x4 ICG + 16 groups): gated branch median 3.35 ns against 2.78 ns ungated,
+# no internal setup/hold violation at any of the 3 corners, no I/O hold
+# violation at Typical (ip_shell4, 1 group: 11 internal setup paths at Slowest).
 if { ![info exists ::env(GEMM_CG_GROUPS)] } { set ::env(GEMM_CG_GROUPS) 16 }
 lappend ::env(SYNTH_DEFINES) GEMM_CG_GROUPS=$::env(GEMM_CG_GROUPS)
 

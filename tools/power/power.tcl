@@ -1,19 +1,28 @@
 # Power of the core at the typical corner (run inside the OpenLane image with sta).
 # Rows are read as their gate netlist + SPEF (not the row .lib), so their cells count.
 # env: CORE_FINAL, ROW_FINAL (results/final of the core / row run, container paths),
+#      DESIGN (top module, default GemmAccelerator; GEMM_top for the complete IP),
+#      SHELL_FINAL (optional, results/final of the AXI macro run: gate netlist + SPEF),
 #      OUT (prefix of the reports), ACT (optional, activity file from vcd2act.py)
 set R $::env(CORE_FINAL)
 set W $::env(ROW_FINAL)
+set D [expr {[info exists ::env(DESIGN)] ? $::env(DESIGN) : "GemmAccelerator"}]
 set lib $::env(PDK_ROOT)/sky130A/libs.ref
 read_liberty $lib/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
 read_liberty $lib/sky130_sram_macros/lib/sky130_sram_2kbyte_1rw1r_32x512_8_TT_1p8V_25C.lib
 read_verilog $W/verilog/gl/ProcessingElementRow.nl.v
-read_verilog $R/verilog/gl/GemmAccelerator.nl.v
-link_design GemmAccelerator
-read_sdc $R/sdc/GemmAccelerator.sdc
-read_spef $R/spef/GemmAccelerator.spef
+if {[info exists ::env(SHELL_FINAL)]} { read_verilog $::env(SHELL_FINAL)/verilog/gl/GemmAxiShell.nl.v }
+read_verilog $R/verilog/gl/$D.nl.v
+link_design $D
+read_sdc $R/sdc/$D.sdc
+read_spef $R/spef/$D.spef
 foreach r [get_cells -hierarchical *g_pe_row*u_row] {
     read_spef -path [get_full_name $r] $W/spef/ProcessingElementRow.spef
+}
+if {[info exists ::env(SHELL_FINAL)]} {
+    foreach r [get_cells -hierarchical u_axi_shell] {
+        read_spef -path [get_full_name $r] $::env(SHELL_FINAL)/spef/GemmAxiShell.spef
+    }
 }
 if {[info exists ::env(ACT)]} {
     # read_power_activities of this OpenSTA only matches VCD names to pins, so the

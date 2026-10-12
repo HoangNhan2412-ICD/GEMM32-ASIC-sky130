@@ -9,7 +9,7 @@ def group(n, r):
     clk = leaf.startswith(("clkbuf_", "clkload")) or "__clkbuf" in r and leaf.startswith("clk")
     seq = any(k in r for k in ("__df", "__dl", "__sdf", "__edf"))
     kind = "clock tree" if clk else ("sequential" if seq else ("diode" if "__diode" in r else "combinational"))
-    where = "row" if "u_row/" in n else "core"
+    where = "row" if "u_row/" in n else "AXI macro" if n.startswith("u_axi_shell/") else "core"
     return f"{where}: {kind}"
 tot = collections.defaultdict(lambda: [0.0]*4); cnt = collections.Counter(); miss = 0
 for l in open(sys.argv[1]):

@@ -16,6 +16,13 @@
 #   openlane/run_flow.sh axi-sim    AXI IP (rtl_asic/axi): slice + shell tests, original testbench, all variants
 #   openlane/run_flow.sh axi-shell  harden the AXI shell alone (thin, reg, lean, lean_cg) + overhead table
 #   openlane/run_flow.sh axi-gls    original testbench on GEMM_top (lean + clock gating) around the final core netlist
+#   openlane/run_flow.sh ip-shell   AXI macro of the complete IP (lean + clock gating, met1-met4)
+#   openlane/run_flow.sh ip-pre     complete IP GEMM_top: synthesis .. global route, floorplan checks
+#   openlane/run_flow.sh ip         complete IP: full run (~10 h), GDS of the whole IP
+#   openlane/run_flow.sh ip-route   route + signoff again from the post-CTS layout of an IP run
+#   openlane/run_flow.sh ip-status  progress of the running / last IP run
+#   openlane/run_flow.sh ip-check   DRC (+ flags around macros on the full GDS), LVS, antenna, corners, power
+#   openlane/run_flow.sh ip-gls     original testbench on the final IP netlist (rows + AXI macro gate-level), 3 shapes
 #   openlane/run_flow.sh status     stages passed so far (openlane/LOG.md)
 #   Diagnostics: core-triage, core-probe, core-precheck, array-check (see the functions below).
 #
@@ -32,6 +39,9 @@
 #   ANT_ECO     antenna ECO rounds after routing, 0 = off [3]
 #   ROW         core-gls: row model, rtl or gl (gate netlist of the row run) [gl]
 #   CORE_RUN    axi-shell / axi-gls: core run to compare with / simulate [last core run that passed]
+#   IP_TAG      ip: run name [ip_v1]; ip-route / ip-check / ip-gls / ip-status: run to use [last ip run]
+#   IP_SHELL_TAG ip-shell: run name of the AXI macro [ip_shell]
+#   IP_CORE_TAG ip-shell / ip-pre: core run whose floorplan the IP reuses [core_v11]
 #   AUTO_COMMIT=1  git commit + tag the kit on every PASS
 # ---------------------------------------------------------------------------
 set -uo pipefail
@@ -935,6 +945,443 @@ st_axi_gls() {
 }
 
 # =========================================================================
+# complete IP: GEMM_top = GemmAxiShell hardened as a macro (gemm_ip_shell)
+#              + GemmAccelerator synthesised flat as in gemm_core (gemm_ip),
+# on the core_v11 floorplan moved by (DX, DY) (gen_ip_files.py)
+IP_SHELL_D=$OL/designs/gemm_ip_shell
+IP_D=$OL/designs/gemm_ip
+
+ip_core_run() { echo "$OL/designs/gemm_core/runs/${IP_CORE_TAG:-core_v11}"; }
+
+ip_floorplan() {   # macro + IP floorplan files, from the floorplan options of the core run
+    local tag=${IP_CORE_TAG:-core_v11} args def chk=()
+    args=$(cat "$STATE/core_gen_args_$tag.txt" 2>/dev/null)
+    [ -n "$args" ] || args=$CORE_GEN_DEFAULT
+    def=$(ls "$(ip_core_run)"/results/final/def/*.def 2>/dev/null | head -1)
+    [ -n "$def" ] && chk=(--check-def "$def")
+    python3 "$HERE/gen_ip_files.py" --pe-area "$(cat "$STATE/pe_area.txt")" --core-args "$args" \
+        --row-lef "$OL/designs/gemm_row/runs/row_v1/results/final/lef/ProcessingElementRow.lef" \
+        "${chk[@]}" --out "$HERE/designs"
+}
+
+ip_common_install() {   # the gemm_core / gemm_axi_shell files the two IP designs source
+    local f
+    cp "$HERE/designs/gemm_common.tcl" "$OL/designs/"
+    mkdir -p "$OL/designs/gemm_core" "$OL/designs/gemm_axi_shell"
+    for f in config.tcl core.sdc keep_rows_clear.tcl PE_row_bb.v sram_bb.v route_signoff.tcl grt_probe.tcl; do
+        cp "$HERE/designs/gemm_core/$f" "$OL/designs/gemm_core/" || return 1
+    done
+    for f in config.tcl shell.sdc dlclkp_bb.v; do
+        cp "$HERE/designs/gemm_axi_shell/$f" "$OL/designs/gemm_axi_shell/" || return 1
+    done
+}
+
+ip_shell_install() {
+    ip_common_install || return 1
+    mkdir -p "$IP_SHELL_D/src"
+    cp "$HERE"/designs/gemm_ip_shell/{config.tcl,shell_full.tcl,ant_seed.py,sizes.tcl,pin_order.cfg} "$IP_SHELL_D/" || return 1
+    # route_signoff.tcl looks for these in DESIGN_DIR
+    cp "$HERE"/designs/gemm_core/{ant_eco.py,macro_cross.py} "$IP_SHELL_D/" || return 1
+    cp "$KIT"/rtl_asic/*.v "$KIT"/rtl_asic/*.vh "$KIT"/rtl_asic/axi/*.v "$IP_SHELL_D/src/"
+}
+
+ip_shell_run() {   # the AXI macro run the IP uses
+    local r=""
+    [ -f "$STATE/ip_shell_run.txt" ] && r=$(cat "$STATE/ip_shell_run.txt")
+    echo "${r:-$IP_SHELL_D/runs/${IP_SHELL_TAG:-ip_shell}}"
+}
+
+ip_ol_full() {   # ip_ol_full <design> <dir> <tcl> <tag> <log prefix>: interactive full run
+    local design=$1 dir=$2 tcl=$3 tag=$4
+    local log=$HERE/logs/${5}_${tag}_$STAMP.log
+    [ -f "$OL/flow.tcl" ] || { echo "OpenLane not found at $OL (set OL=...)"; exit 1; }
+    printf '# written by run_flow.sh %s for designs/%s/%s\nset GEMM_NEW_TAG %s\n' "$STAMP" "$design" "$tcl" "$tag" \
+        > "$dir/full_params.tcl"
+    echo "  OpenLane ($tcl): $design (tag $tag) - log: ${log#"$KIT"/}"
+    mem_watch_start "$HERE/logs/mem_${design}_${tag}_$STAMP.txt"
+    make -C "$OL" quick_run QUICK_RUN_DESIGN="$design -it -file designs/$design/$tcl" 2>&1 | tee "$log"
+    local rc=${PIPESTATUS[0]}
+    mem_watch_stop
+    [ "$rc" -eq 0 ] || fail "OpenLane run $design/$tag stopped (see the log above)"
+    RUNDIR=$OL/designs/$design/runs/$tag
+}
+
+st_ip_shell() {
+    need axi-sim
+    local tag=${IP_SHELL_TAG:-ip_shell}
+    say "ip-shell: the AXI macro of the IP (GemmAxiShell lean + clock gating, met1-met4), run $tag"
+    ol_patches || { fail "patch OpenLane scripts"; finish ip-shell; }
+    local rc=0
+    ip_floorplan > "$STATE/ip_floorplan.txt" || rc=$?
+    sed 's/^/  /' "$STATE/ip_floorplan.txt"
+    [ $rc -eq 0 ] || { fail "gen_ip_files.py (floorplan / pin alignment)"; finish ip-shell; }
+    ip_shell_install || { fail "install gemm_ip_shell into $OL"; finish ip-shell; }
+    rm -f "$IP_SHELL_D/overrides.tcl"
+    # 1) calibration run: the macro's own clock latency for its port delays (as axi-shell)
+    # Only the clock tree matters here. With the ideal outside clock of this run every
+    # input misses hold by the whole latency, and on a 160 um wide die the ~6400 hold
+    # buffers the resizer adds do not fit next to the West pins (first try: DPL-0036
+    # legalizing the port diodes). So no timing repair in this run.
+    rm -f "$IP_SHELL_D/clk_latency.tcl"
+    printf 'set ::env(PL_RESIZER_TIMING_OPTIMIZATIONS) 0\nset ::env(GLB_RESIZER_TIMING_OPTIMIZATIONS) 0\n' \
+        > "$IP_SHELL_D/overrides.tcl"
+    ol_run gemm_ip_shell "${tag}_cal"
+    rm -f "$IP_SHELL_D/overrides.tcl"
+    if python3 "$KIT/tools/clock_latency.py" "$RUNDIR" "$IP_SHELL_D/clk_latency.tcl" > "$HERE/logs/ip_shell_lat_$STAMP.log" 2>&1; then
+        pass "macro clock latency: $(grep -o 'MIN) [0-9.]*\|MAX) [0-9.]*' "$IP_SHELL_D/clk_latency.tcl" | tr '\n' ' ')"
+        awk '/GEMM_CLK_LAT_MAX/{print $3}' "$IP_SHELL_D/clk_latency.tcl" > "$STATE/ip_shell_lat.txt"
+    else fail "could not measure the macro clock latency (see openlane/logs/ip_shell_lat_$STAMP.log)"; finish ip-shell; fi
+    FAILS=0     # the calibration run is not judged
+    # 2) the real run: flow up to CTS + gemm_core/route_signoff.tcl (antenna ECO rounds)
+    ip_ol_full gemm_ip_shell "$IP_SHELL_D" shell_full.tcl "$tag" gemm_ip_shell
+    FAILS=0
+    # internal timing at Typical (the port budget is the IP's business, see ip.sdc)
+    check_run "$RUNDIR" --waive-io-timing
+    python3 "$KIT/tools/sta_corners.py" "$RUNDIR" > "$HERE/logs/ip_shell_corners_$STAMP.txt" 2>&1 || true
+    local fin=$RUNDIR/results/final lef=$HERE/designs/gemm_ip/GemmAxiShell_antenna.lef
+    # 3) antenna data on every signal pin of the macro LEF (the IP's antenna check reads it)
+    mkdir -p "$HERE/designs/gemm_ip"
+    if python3 "$KIT/tools/lef_antenna_pins.py" "$fin/lef/GemmAxiShell.lef" GemmAxiShell; then
+        cp "$fin/lef/GemmAxiShell.lef" "$lef"
+        pass "macro LEF: antenna data on every signal pin"
+    else
+        local lib=""
+        for r in "${PDK_ROOT:-}" "$HOME/.ciel" "$HOME/.volare" "$OL/pdks"; do
+            [ -n "$r" ] && [ -f "$r/${PDK:-sky130A}/libs.ref/sky130_fd_sc_hd/lef/sky130_fd_sc_hd.lef" ] \
+                && { lib=$r/${PDK:-sky130A}/libs.ref/sky130_fd_sc_hd/lef/sky130_fd_sc_hd.lef; break; }
+        done
+        if [ -n "$lib" ] && python3 "$HERE/designs/gemm_core/macro_antenna_lef.py" --in "$fin/lef/GemmAxiShell.lef" \
+               --lib-lef "$lib" --out "$lef" && python3 "$KIT/tools/lef_antenna_pins.py" "$lef" GemmAxiShell; then
+            pass "macro LEF: antenna data added by macro_antenna_lef.py on the pins that had none (${lef#"$KIT"/})"
+        else fail "macro LEF without antenna data on some pins"; fi
+    fi
+    # 4) the original testbench on GEMM_top with the macro's final netlist + the core RTL
+    if "$KIT/tools/axi_shell_power.sh" "$RUNDIR" --vcd 0 end > "$HERE/logs/ip_shell_gls_$STAMP.log" 2>&1 \
+       && grep -q "OVERALL PASS" "$KIT/sim/build_shell_power/${tag}_vcd_0_end/sim.log"; then
+        pass "testbench on GEMM_top (macro netlist + core RTL): OVERALL PASS (openlane/logs/ip_shell_gls_$STAMP.log)"
+    else fail "testbench with the macro netlist (see openlane/logs/ip_shell_gls_$STAMP.log)"; fi
+    "$KIT/tools/axi_shell_power.sh" "$RUNDIR" >> "$HERE/logs/ip_shell_gls_$STAMP.log" 2>&1 || true
+    # 5) the IP top + the port view of the macro, from this netlist
+    python3 "$HERE/gen_ip_files.py" --rtl "$fin/verilog/gl/GemmAxiShell.nl.v" --out "$HERE/designs" \
+        || fail "gen_ip_files.py --rtl"
+    [ $FAILS -eq 0 ] && echo "$RUNDIR" > "$STATE/ip_shell_run.txt"
+    NOTE="${RUNDIR#"$OL"/}: $(head -c 300 "$STATE/ip_floorplan.txt" | sed -n 3p)"
+    finish ip-shell
+}
+
+ip_latency() {   # clk_latency.tcl of the IP: core flops (core run) + the AXI macro's own latency
+    local core lat_c lat_s tmp
+    core=$(ip_core_run); tmp=$(mktemp)
+    if python3 "$KIT/tools/clock_latency.py" "$core" "$tmp" > /dev/null 2>&1; then
+        lat_c=$(awk '/GEMM_CLK_LAT_MAX/{print $3}' "$tmp")
+    else lat_c=5.16; fi
+    rm -f "$tmp"
+    lat_s=$(cat "$STATE/ip_shell_lat.txt" 2>/dev/null); lat_s=${lat_s:-0}
+    {
+        echo "# written by run_flow.sh $STAMP: every AXI port faces a flop inside u_axi_shell, clocked"
+        echo "# at the clock of the core's flops (${core##*/}: median $lat_c ns, CTS balances the macro"
+        echo "# clock pin with them) + the macro's own latency ($lat_s ns, ip-shell calibration run)"
+        echo "set ::env(GEMM_CLK_LAT_MIN) $(awk -v a="$lat_c" -v b="$lat_s" 'BEGIN{printf "%.2f", a + b}')"
+        echo "set ::env(GEMM_CLK_LAT_MAX) $(awk -v a="$lat_c" -v b="$lat_s" 'BEGIN{printf "%.2f", a + b}')"
+    } > "$HERE/designs/gemm_ip/clk_latency.tcl"
+    sed -n 4,5p "$HERE/designs/gemm_ip/clk_latency.tcl" | sed 's/^/  port latency: /'
+}
+
+ip_install() {   # everything gemm_ip needs in $OL (floorplan files must already be generated)
+    local shell sram="" lib="" f
+    shell=$(ip_shell_run)
+    [ -f "$shell/results/final/gds/GemmAxiShell.gds" ] || { echo "  no AXI macro in $shell - run ip-shell first"; return 1; }
+    ip_common_install || return 1
+    for root in "${PDK_ROOT:-}" "$HOME/.volare" "$HOME/.ciel" "$OL/pdks"; do
+        [ -n "$root" ] && [ -f "$root/${PDK:-sky130A}/libs.ref/sky130_sram_macros/lef/sky130_sram_2kbyte_1rw1r_32x512_8.lef" ] \
+            && { sram=$root/${PDK:-sky130A}/libs.ref/sky130_sram_macros; lib=$root/${PDK:-sky130A}/libs.ref/sky130_fd_sc_hd/lef/sky130_fd_sc_hd.lef; break; }
+    done
+    [ -n "$sram" ] || { echo "  OpenRAM macro LEF not found"; return 1; }
+    mkdir -p "$IP_D/src"
+    # same annotated SRAM LEF as core_install writes for gemm_core
+    python3 "$HERE/designs/gemm_core/macro_antenna_lef.py" --in "$sram/lef/sky130_sram_2kbyte_1rw1r_32x512_8.lef" \
+        --lib-lef "$lib" --out "$IP_D/sram_antenna.lef" > /dev/null || return 1
+    for f in config.tcl ip.sdc cfg_shift_mcp.sdc clk_latency_seed.tcl ip_pre.tcl ip_full.tcl ip_resume.tcl \
+             sizes.tcl macro.cfg pin_order.cfg floorplan.txt GEMM_top_ip.v GemmAxiShell_bb.v GemmAxiShell_antenna.lef; do
+        cp "$HERE/designs/gemm_ip/$f" "$IP_D/" || { echo "  missing openlane/designs/gemm_ip/$f"; return 1; }
+    done
+    [ -f "$HERE/designs/gemm_ip/clk_latency.tcl" ] && cp "$HERE/designs/gemm_ip/clk_latency.tcl" "$IP_D/"
+    cp "$HERE"/designs/gemm_core/{ant_eco.py,macro_cross.py} "$IP_D/" || return 1
+    cp "$KIT"/rtl_asic/*.v "$KIT"/rtl_asic/*.vh "$IP_D/src/"
+    # the macro run, as the container sees it (relative to the design dir)
+    printf '# written by run_flow.sh %s\nset ::env(GEMM_IP_SHELL_RUN) $::env(DESIGN_DIR)/../gemm_ip_shell/runs/%s\n' \
+        "$STAMP" "${shell##*/}" > "$IP_D/shell_run.tcl"
+}
+
+grt_overflow() {   # grt_overflow <log>: total overflow of the GRT-0096 table (last one in the log)
+    grep -A12 "GRT-0096" "$1" 2>/dev/null | awk '/^Total/{v=$NF} END{print (v == "" ? "-" : v)}'
+}
+
+st_ip_pre() {
+    need ip-shell
+    say "ip-pre: GEMM_top lint + synthesis + floorplan + placement + global route"
+    ip_floorplan > "$STATE/ip_floorplan.txt" || { cat "$STATE/ip_floorplan.txt"; fail "gen_ip_files.py"; finish ip-pre; }
+    sed 's/^/  /' "$HERE/designs/gemm_ip/floorplan.txt"
+    ol_patches || { fail "patch OpenLane scripts"; finish ip-pre; }
+    ip_latency
+    rm -f "$HERE/designs/gemm_ip/overrides.tcl" "$IP_D/overrides.tcl"
+    ip_install || { fail "install gemm_ip into $OL"; finish ip-pre; }
+    local log=$HERE/logs/gemm_ip_pre_$STAMP.log run=$IP_D/runs/ip_pre
+    echo "  OpenLane (ip_pre.tcl) - log: ${log#"$KIT"/}"
+    mem_watch_start "$HERE/logs/mem_gemm_ip_ip_pre_$STAMP.txt"
+    make -C "$OL" quick_run QUICK_RUN_DESIGN="gemm_ip -it -file designs/gemm_ip/ip_pre.tcl" 2>&1 | tee "$log"
+    local rc=${PIPESTATUS[0]}
+    mem_watch_stop; PEAK=${MEMPEAK:--}
+    if [ "$rc" -eq 0 ] && grep -q "GEMM_IP_PRE_DONE" "$log"; then pass "lint, synthesis, floorplan, placement, global route completed"
+    else fail "ip_pre.tcl stopped - first error:"; grep -m3 -E "\[ERROR|Error:" "$log" | sed 's/^/    /'; fi
+    # netlist: 80 SRAM, 32 rows, 1 AXI macro, macro names as macro.cfg expects
+    local net; net=$(ls "$run"/results/synthesis/*.v 2>/dev/null | head -1)
+    if [ -n "$net" ]; then
+        local ns nr na
+        ns=$(grep -cE "^\s*sky130_sram_2kbyte_1rw1r_32x512_8\s" "$net")
+        nr=$(grep -cE "^\s*ProcessingElementRow\s" "$net")
+        na=$(grep -cE "^\s*GemmAxiShell\s+u_axi_shell\b" "$net")
+        [ "$ns" = 80 ] && [ "$nr" = 32 ] && [ "$na" = 1 ] && pass "netlist: 80 OpenRAM, 32 row macros, 1 AXI macro (u_axi_shell)" \
+            || fail "netlist has $ns OpenRAM, $nr row, $na AXI macros (expected 80, 32, 1)"
+        grep -m1 -oE "\\\\u_gemm_accelerator\.u_buffer_feeder\.u_compute_core\.u_processing_element_array\.g_pe_row\[0\]\.u_row" "$net" \
+            | sed 's/^/  row 0 is named /'
+    else fail "no synthesis netlist in $run/results/synthesis"; fi
+    local placed want
+    placed=$(grep -rhoE "Successfully placed [0-9]+ instances" "$run/logs" 2>/dev/null | tail -1 | awk '{print $3}')
+    want=$(awk '/GEMM_IP_MACROS/{print $3}' "$HERE/designs/gemm_ip/sizes.tcl")
+    [ "${placed:-0}" = "$want" ] && pass "$want hard macros placed from macro.cfg" \
+        || fail "macro placement placed '${placed:-0}', expected $want"
+    # where the macros really are: counts, overlaps, positions = macro.cfg
+    local def; def=$(ls -t "$run"/results/placement/*.def "$run"/tmp/routing/*global.def 2>/dev/null | head -1)
+    if [ -n "$def" ] && python3 "$KIT/tools/macro_place_check.py" "$def" "$run/tmp/merged.nom.lef" --cfg "$IP_D/macro.cfg" \
+           --expect sky130_sram_2kbyte_1rw1r_32x512_8=80 ProcessingElementRow=32 GemmAxiShell=1 | sed 's/^/  /'; then
+        pass "32 rows + 80 SRAM + 1 AXI macro where macro.cfg puts them, no overlap"
+    else fail "macro placement check (${def:-no DEF})"; fi
+    grep -h "keep_rows_clear" "$run"/logs/*/*.log 2>/dev/null | tail -n 1 | sed 's/^ *\[INFO\]: /  /'
+    # global route: macro crossings and overflow vs the core run's first global route
+    local mc; mc=$(sed -n 's/.*GEMM_IP_MACRO_CROSS exit \([0-9]*\).*/\1/p' "$log" | tail -1)
+    grep -E "^RESULT:|nets THROUGH" "$log" | tail -n 2 | sed 's/^/  macro_cross: /'
+    [ "$mc" = 0 ] && pass "macro_cross: no net through a macro" || fail "macro_cross exit '${mc:-none}' (see $run/reports/routing/macro_cross.rpt)"
+    local ip_of core_of glog clog
+    glog=$(ls "$run"/logs/routing/*-global.log 2>/dev/null | sort -t- -k1,1n | tail -1)
+    clog=$(ls "$(ip_core_run)"/logs/routing/*-global.log 2>/dev/null | sort -V | head -1)
+    ip_of=$(grt_overflow "$glog"); core_of=$(grt_overflow "$clog")
+    echo "  global route overflow: IP $ip_of (before CTS, ${glog##*/}), ${IP_CORE_TAG:-core_v11} $core_of (after CTS, ${clog##*/})"
+    if [ "$ip_of" != "-" ] && [ "$core_of" != "-" ] && [ "$ip_of" -le $(( core_of * 3 / 2 + 20 )) ]; then
+        pass "global route overflow $ip_of, not clearly worse than ${IP_CORE_TAG:-core_v11} ($core_of)"
+    else fail "global route overflow $ip_of vs ${IP_CORE_TAG:-core_v11} $core_of"; fi
+    grep -A10 "GRT-0096" "$glog" 2>/dev/null | sed -n '1,10p' | sed 's/^/    /'
+    NOTE="ip_pre: overflow $ip_of (core_v11 $core_of), macro_cross exit ${mc:-none}"
+    finish ip-pre
+}
+
+ip_last_tag() { local t=""; [ -f "$STATE/ip_last_tag.txt" ] && t=$(cat "$STATE/ip_last_tag.txt"); echo "${t:-ip_v1}"; }
+
+st_ip() {
+    need ip-pre
+    local tag=${IP_TAG:-ip_v1}
+    say "ip: GEMM_top full run (AXI macro + 32 rows + 80 OpenRAM), tag $tag - expect ~10 h"
+    need_disk "${MIN_DISK_GB:-40}"
+    echo "$tag" > "$STATE/ip_last_tag.txt"
+    ip_floorplan > "$STATE/ip_floorplan.txt" || { fail "gen_ip_files.py"; finish ip; }
+    ip_latency
+    rm -f "$HERE/designs/gemm_ip/overrides.tcl" "$IP_D/overrides.tcl"
+    local ovr="# written by run_flow.sh ip $STAMP"
+    ovr+=$'\n'"set ::env(GEMM_DRT_SEEDS) \"${DRT_SEEDS:-42 7 23}\""
+    route_overrides
+    printf '%s\n' "$ovr" > "$HERE/designs/gemm_ip/overrides.tcl"
+    sed 's/^/  overrides: /' "$HERE/designs/gemm_ip/overrides.tcl"
+    ol_patches || { fail "patch OpenLane scripts"; finish ip; }
+    ip_install || { fail "install gemm_ip into $OL"; finish ip; }
+    cp "$HERE/designs/gemm_ip/overrides.tcl" "$IP_D/"
+    ip_ol_full gemm_ip "$IP_D" ip_full.tcl "$tag" gemm_ip
+    # global placement can diverge (GPL-0307): retry once without timing-driven placement, as core
+    if grep -qs "GPL-0307" "$RUNDIR"/logs/placement/*global*.log; then
+        echo "  global placement diverged (GPL-0307) - retrying once with PL_TIME_DRIVEN 0"
+        printf '%s\n# after GPL-0307 in the previous attempt\nset ::env(PL_TIME_DRIVEN) 0\n' "$ovr" > "$IP_D/overrides.tcl"
+        FAILS=0
+        ip_ol_full gemm_ip "$IP_D" ip_full.tcl "$tag" gemm_ip
+    fi
+    rm -f "$HERE/designs/gemm_ip/overrides.tcl" "$IP_D/overrides.tcl"
+    local drc=$RUNDIR/reports/routing/drt.drc
+    if [ -s "$drc" ] && grep -q "violation type" "$drc"; then
+        echo "  $tag: detailed routing left $(grep -c 'violation type' "$drc") violation(s) with every seed -"
+        echo "  routing again from its post-CTS layout with other router seeds (run ${tag}r)"
+        FAILS=0
+        FROM=$tag IP_TAG=${tag}r DRT_SEEDS="${DRT_SEEDS_RETRY:-101 211 307}" st_ip_route   # ends with ip_verdict
+        return
+    fi
+    ip_verdict ip
+}
+
+ip_verdict() {   # ip_verdict <stage>: judge $RUNDIR as a complete IP (no I/O timing waiver)
+    FAILS=0
+    local placed want
+    placed=$(grep -rhoE "Successfully placed [0-9]+ instances" "$RUNDIR/logs" 2>/dev/null | tail -1 | awk '{print $3}')
+    want=$(awk '/GEMM_IP_MACROS/{print $3}' "$HERE/designs/gemm_ip/sizes.tcl")
+    [ "${placed:-0}" = "$want" ] && pass "$want hard macros placed" || fail "placed '${placed:-0}' hard macros, expected $want"
+    check_run "$RUNDIR"
+    NOTE="GDS: ${RUNDIR#"$OL"/}/results/final/gds/GEMM_top.gds"
+    [ -f "$RUNDIR/results/final/gds/GEMM_top.gds" ] && echo "$RUNDIR" > "$STATE/ip_run.txt"
+    finish "$1"
+}
+
+ip_best_run() {
+    local r=""
+    [ -f "$STATE/ip_run.txt" ] && r=$(cat "$STATE/ip_run.txt")
+    if [ -n "${IP_TAG:-}" ]; then echo "$IP_D/runs/$IP_TAG"; elif [ -n "$r" ] && [ -d "$r" ]; then echo "$r"
+    else echo "$IP_D/runs/$(ip_last_tag)"; fi
+}
+
+st_ip_route() {   # routing + signoff from the post-CTS layout of an IP run (as core-route)
+    need ip-pre
+    local from=${FROM:-$(ip_last_tag)}
+    local tag=${IP_TAG:-${from}r}
+    local src=$IP_D/runs/$from
+    say "ip-route: routing + signoff from the post-CTS layout of $from (new run $tag)"
+    need_disk "${MIN_DISK_GB:-40}"
+    [ -f "$src/config.tcl" ] || { echo "  no $src/config.tcl - nothing to continue from"; exit 1; }
+    [ "$from" != "$tag" ] || { echo "  IP_TAG must differ from FROM"; exit 1; }
+    ls "$src"/tmp/cts/*.resized.odb "$src"/results/cts/*.odb > /dev/null 2>&1 \
+        || { echo "  $from has no post-CTS layout (tmp/cts/*.resized.odb) - run ip again"; exit 1; }
+    local ovr="# written by run_flow.sh ip-route $STAMP (continuing $from)"
+    [ -n "${GRT_ALLOW:-}" ] && ovr+=$'\n'"set ::env(GRT_ALLOW_CONGESTION) $GRT_ALLOW"
+    [ -n "${DRT_ITERS:-}" ] && ovr+=$'\n'"set ::env(DRT_OPT_ITERS) $DRT_ITERS"
+    local seeds=${DRT_SEEDS:-"${DRT_SEED:-7} 23 101"}
+    ovr+=$'\n'"set ::env(GEMM_DRT_SEEDS) \"$seeds\""
+    ovr+=$'\n'"set ::env(DRT_OR_SEED) ${seeds%% *}"
+    route_overrides
+    # antenna ECO round 0 from the violators of an earlier route of the same netlist
+    if [ "${ANT_ECO:-3}" != 0 ]; then
+        local arpt=${ANT_RPT:-}
+        [ -n "$arpt" ] || arpt=$(ls -t "$src"/reports/signoff/*antenna_violators.rpt 2>/dev/null | head -1)
+        if [ -n "$arpt" ] && [ -f "$arpt" ]; then
+            echo "  antenna ECO round 0 from ${arpt#"$OL"/} ($(grep -c 'Partial/Required' "$arpt") violations)"
+            ovr+=$'\n'"set ::env(GEMM_ANT_ECO_RPT) \"${arpt/#$OL\//\/openlane\/}\""
+        fi
+    fi
+    printf '%s\n' "$ovr" > "$HERE/designs/gemm_ip/overrides.tcl"
+    sed 's/^/  overrides: /' "$HERE/designs/gemm_ip/overrides.tcl"
+    ol_patches || exit 1
+    ip_install || exit 1
+    cp "$HERE/designs/gemm_ip/overrides.tcl" "$IP_D/"
+    echo "$tag" > "$STATE/ip_last_tag.txt"
+    cat > "$IP_D/resume_params.tcl" <<EOF
+# written by run_flow.sh $STAMP for designs/gemm_ip/ip_resume.tcl
+set GEMM_FROM_TAG    $from
+set GEMM_NEW_TAG     $tag
+set GEMM_MODE        route
+set GEMM_PROBE_ITERS 0
+EOF
+    local log=$HERE/logs/gemm_ip_route_${tag}_$STAMP.log
+    echo "  OpenLane (ip_resume.tcl) - log: ${log#"$KIT"/}"
+    mem_watch_start "$HERE/logs/mem_gemm_ip_${tag}_$STAMP.txt"
+    make -C "$OL" quick_run QUICK_RUN_DESIGN="gemm_ip -it -file designs/gemm_ip/ip_resume.tcl" 2>&1 | tee "$log"
+    mem_watch_stop
+    rm -f "$HERE/designs/gemm_ip/overrides.tcl" "$IP_D/overrides.tcl"
+    RUNDIR=$IP_D/runs/$tag
+    ip_verdict ip
+}
+
+st_ip_status() {   # where the running (or last) IP run is - reads files only, safe any time
+    local tag=${IP_TAG:-$(ip_last_tag)}
+    local run=$IP_D/runs/$tag
+    say "ip-status: $tag"
+    [ -d "$run" ] || { echo "  no run directory ${run#"$OL"/} yet"; return 0; }
+    local now first step last f p
+    now=$(date +%s)
+    first=$(ls -tr "$run"/logs/synthesis/*.log 2>/dev/null | head -1)
+    [ -n "$first" ] && printf "  running for  : %dh%02dm (since the first synthesis log)\n" \
+        $(( (now - $(stat -c %Y "$first")) / 3600 )) $(( (now - $(stat -c %Y "$first")) % 3600 / 60 ))
+    step=$(grep -ho "\[STEP [0-9]*\]" "$run"/openlane.log 2>/dev/null | tail -1)
+    [ -n "$step" ] && echo "  last step    : $step  $(grep -hE '\[INFO\]: (Running|Starting|Skipping)' "$run"/openlane.log 2>/dev/null | tail -1 | sed 's/.*\[INFO\]: //')"
+    grep -qs "flow failed\|\[ERROR\]" "$run"/openlane.log && echo "  !! openlane.log has an error: $(grep -h -m1 '\[ERROR\]' "$run"/openlane.log | cut -c1-150)"
+    [ -f "$run/reports/metrics.csv" ] && echo "  flow finished: reports/metrics.csv written - run: openlane/run_flow.sh ip-check"
+    last=$(ls -t "$run"/logs/*/*.log 2>/dev/null | head -1)
+    if [ -n "$last" ]; then
+        printf "  newest log   : %s (%s, updated %ds ago)\n" "${last#"$run"/}" "$(du -h "$last" | cut -f1)" $(( now - $(stat -c %Y "$last") ))
+        tail -n 3 "$last" | cut -c1-150 | sed 's/^/      | /'
+    fi
+    for f in $(ls -tr "$run"/logs/routing/*.log 2>/dev/null); do
+        grep -q "GRT-0096" "$f" || continue
+        echo "  global route : ${f##*/}: total overflow $(grt_overflow "$f")"
+    done
+    f=$(ls -t "$run"/logs/routing/*detailed*.log 2>/dev/null | head -1)
+    [ -n "$f" ] && echo "  detailed rt  : $(grep -hE 'Start .*(optimization iteration|routing)\.' "$f" | tail -1 | sed 's/.*\] //')  $(grep -h 'Number of violations' "$f" | tail -1 | sed 's/.*\] *//')"
+    [ -s "$run/reports/routing/ant_eco_rounds.txt" ] && sed 's/^/  ECO         : /' "$run/reports/routing/ant_eco_rounds.txt"
+    f=$(ls -t "$HERE"/logs/mem_gemm_ip_"$tag"_*.txt 2>/dev/null | head -1)
+    [ -n "$f" ] && [ -s "$f" ] && echo "  memory now   : $(tail -n 1 "$f" | awk '{printf "%s: %s %s MB, free RAM %s MB, swap used %s MB", $1, $3, $2, $4, $5}')"
+    [ -n "$f" ] && [ -s "$f" ] && echo "  memory peak  : $(awk '$2 > m {m = $2; c = $3} END {print m " MB (" c ")"}' "$f")"
+    p=$(ps -eo etime=,rss=,comm= 2>/dev/null | awk '$3 ~ /^(openroad|yosys|magic|netgen|klayout)/ {printf "%s (%d MB, %s)  ", $3, $2/1024, $1}')
+    echo "  EDA process  : ${p:-none running}"
+    echo "  disk free: $(disk_free_gb) GB"
+}
+
+st_ip_check() {   # signoff of an IP run, every check that does not need OpenLane's flow
+    need ip-pre
+    RUNDIR=$(ip_best_run)
+    say "ip-check: ${RUNDIR#"$OL"/}"
+    [ -f "$RUNDIR/reports/metrics.csv" ] || { echo "  no reports/metrics.csv - the run did not finish"; exit 1; }
+    local out=$HERE/logs/ip_check_${RUNDIR##*/}_$STAMP; mkdir -p "$out"
+    # router DRC, Magic DRC, LVS, antenna, setup (spef_wns) and hold - no I/O timing waiver;
+    # judged item by item, since Magic flags next to a macro get a second look below
+    python3 "$HERE/check_openlane_run.py" "$RUNDIR" > "$out/check_openlane_run.txt" 2>&1
+    cp "$out/check_openlane_run.txt" "$STATE/last_check.txt"
+    sed 's/^/  /' "$out/check_openlane_run.txt"
+    PEAK=$(awk -F'= ' '/Peak_Memory_Usage_MB/{split($2,a," "); print a[1]}' "$out/check_openlane_run.txt")
+    local item v
+    for item in tritonRoute_violations lvs_total_errors pin_antenna_violations spef_wns; do
+        grep -qE "^ *PASS +$item" "$out/check_openlane_run.txt" && pass "$item" \
+            || fail "$item: $(grep -E " $item" "$out/check_openlane_run.txt" | sed 's/^ *//')"
+    done
+    grep -qE "^ *PASS +hold worst slack" "$out/check_openlane_run.txt" && pass "hold" || fail "hold (signoff, typical)"
+    # Magic flags: every one must be an abstract-view artefact next to a macro (full GDS)
+    v=$(awk -F'= ' '/Magic_violations/{print $2+0}' "$out/check_openlane_run.txt")
+    if [ "${v:-x}" = 0 ]; then pass "Magic_violations = 0"
+    elif [ -n "$v" ] && "$KIT/tools/magic_macro_check.sh" "$RUNDIR" > "$out/magic_macro_check.txt" 2>&1; then
+        pass "Magic: $v flags, all next to macros and clean on the full GDS (tools/magic_macro_check.sh)"
+        tail -n 4 "$out/magic_macro_check.txt" | sed 's/^/    /'
+    else
+        fail "Magic: ${v:-no} flags not cleared by magic_macro_check.sh (see ${out#"$KIT"/}/magic_macro_check.txt)"
+        tail -n 4 "$out/magic_macro_check.txt" 2>/dev/null | sed 's/^/    /'
+    fi
+    python3 "$KIT/tools/sta_corners.py" "$RUNDIR" > "$out/sta_corners.txt" 2>&1 \
+        && pass "corners: ${out#"$KIT"/}/sta_corners.txt" || fail "tools/sta_corners.py"
+    grep -E "^=====|worst|WNS|slack" "$out/sta_corners.txt" | head -n 24 | sed 's/^/    /'
+    if DESIGN=GEMM_top SHELL_RUN=$(ip_shell_run) "$KIT/tools/power.sh" "$RUNDIR" > "$out/power.txt" 2>&1; then
+        pass "power, vectorless: $(grep -E '^Total' "$RUNDIR/reports/power/vectorless.design.rpt" | awk '{print $5" W"}')"
+    else fail "tools/power.sh (see ${out#"$KIT"/}/power.txt)"; fi
+    NOTE="${RUNDIR##*/}, reports in ${out#"$KIT"/}"
+    finish ip-check
+}
+
+st_ip_gls() {   # original testbench on the final IP netlist, rows + AXI macro gate-level, 3 shapes
+    need ip-pre
+    local run; run=$(ip_best_run)
+    [ -f "$run/results/final/verilog/gl/GEMM_top.nl.v" ] || { echo "no final netlist in $run"; exit 1; }
+    say "ip-gls: original testbench on ${run#"$OL"/} (rows + AXI macro gate-level)"
+    local out=$HERE/logs/ip_gls_$STAMP shape tag t0 ref
+    mkdir -p "$out"
+    # reference: lean + clock gating RTL with the OpenRAM models (axi-sim, same shapes)
+    local axl; axl=$(ls -td "$HERE"/logs/axi_sim_* 2>/dev/null | head -1)
+    for shape in "" "8,32,544" "16,992,32"; do
+        tag=${shape:+_M$(echo "$shape" | awk -F, '{print $1"K"$2"N"$3}')}
+        t0=$(date +%s)
+        if TB_SHAPE="$shape" BUILD="$KIT/sim/build_ip_gls$tag" SHELL_RUN=$(ip_shell_run) OL=$OL \
+               "$KIT/sim/run_ip_gls.sh" "$run" "$REPO" > "$out/gls$tag.log" 2>&1; then
+            pass "${shape:-64,64,64}: OVERALL PASS ($(( $(date +%s) - t0 )) s, $(wc -l < "$KIT/sim/build_ip_gls$tag/cycles_gls.txt") result events)"
+        else fail "${shape:-64,64,64}: gate-level sim failed (see ${out#"$KIT"/}/gls$tag.log)"; tail -n 4 "$out/gls$tag.log" | sed 's/^/    /'; fi
+        cp "$KIT/sim/build_ip_gls$tag/cycles_gls.txt" "$out/cycles_gls$tag.txt" 2>/dev/null
+        ref=$axl/cycles_lean_cg-sram$tag.txt
+        if [ -s "$ref" ] && diff -q "$ref" "$out/cycles_gls$tag.txt" > /dev/null 2>&1; then
+            pass "${shape:-64,64,64}: same $(wc -l < "$ref") result events at the same cycles as the lean_cg RTL (axi-sim)"
+        else fail "${shape:-64,64,64}: result events differ from ${ref#"$KIT"/}"; fi
+    done
+    NOTE="${run##*/}, logs in ${out#"$KIT"/}"
+    finish ip-gls
+}
+
+# =========================================================================
 case "${1:-}" in
     sim)   st_sim ;;
     pe)    st_pe ;;
@@ -957,6 +1404,13 @@ case "${1:-}" in
     axi-sim)    st_axi_sim ;;
     axi-shell)  st_axi_shell ;;
     axi-gls)    st_axi_gls ;;
+    ip-shell)   st_ip_shell ;;
+    ip-pre)     st_ip_pre ;;
+    ip)         st_ip ;;
+    ip-route)   st_ip_route ;;
+    ip-status)  st_ip_status ;;
+    ip-check)   st_ip_check ;;
+    ip-gls)     st_ip_gls ;;
     all)   "$0" sim && "$0" pe && "$0" row && "$0" array && "$0" core-sim && "$0" core-pre && "$0" core ;;
     status) cat "$LOG" ;;
     *) sed -n '2,/^# ----/p' "$0" | sed '$d'; exit 2 ;;

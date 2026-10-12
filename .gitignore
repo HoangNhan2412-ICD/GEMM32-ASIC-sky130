@@ -20,3 +20,12 @@ openlane/designs/*/clk_latency.tcl
 openlane/designs/gemm_core/floorplan.txt
 openlane/designs/gemm_core/sram_antenna.lef
 
+
+# complete IP (gemm_ip_shell / gemm_ip): written by gen_ip_files.py / run_flow.sh ip-*
+openlane/designs/gemm_ip/floorplan.txt
+openlane/designs/gemm_ip/GEMM_top_ip.v
+openlane/designs/gemm_ip/GemmAxiShell_bb.v
+openlane/designs/gemm_ip/GemmAxiShell_antenna.lef
+openlane/designs/gemm_ip/shell_run.tcl
+openlane/designs/gemm_ip/resume_params.tcl
+openlane/designs/*/full_params.tcl

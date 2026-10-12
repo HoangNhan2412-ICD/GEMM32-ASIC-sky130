@@ -7,7 +7,7 @@
 // of i_en during the high phase cannot cut a pulse short: the standard ICG.
 //
 // Synthesis: the sky130 integrated clock-gating cell (sky130_fd_sc_hd__
-// dlclkp_1), so OpenSTA sees a real clock gate (clock-gating checks on i_en)
+// dlclkp_1; dlclkp_4 with GEMM_ICG_X4), so OpenSTA sees a real clock gate (clock-gating checks on i_en)
 // and CTS builds the tree up to its CLK pin and on from its GCLK output.
 // Simulation: the same latch + AND in behavioural form.
 //
@@ -24,7 +24,13 @@ module AxisClockGate
 );
 
 `ifdef SYNTHESIS
+`ifdef GEMM_ICG_X4
+// stronger drive for the GCLK net (gemm_ip_shell: with dlclkp_1 the gated
+// branch reached 7.2 ns of latency against ~3 ns for the rest of the macro)
+sky130_fd_sc_hd__dlclkp_4 u_icg (
+`else
 sky130_fd_sc_hd__dlclkp_1 u_icg (
+`endif
     .CLK  (i_clk),
     .GATE (i_en),
     .GCLK (o_gclk)

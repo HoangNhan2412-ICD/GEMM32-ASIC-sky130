@@ -238,8 +238,28 @@ def floorplan(a):
     top_core = max(east.values())
     # result bus: bottom of the East edge, bit 0 lowest
     res = bits("i_result_data", 256) + ["i_result_valid", "i_result_last", "o_result_ready"]
-    for k, p in enumerate(res):
-        east[p] = a.result_track + k
+    rstrb = {}                                  # result_axis_tstrb[b] -> track (West only)
+    if a.result_top > 0:
+        # spread up to --result-top (macro-local um): the 256 data bits with one tstrb
+        # after every 8 (West edge only), then valid/last/ready, evenly over the tracks
+        seq = []
+        for b in range(32):
+            seq += [f"i_result_data[{8 * b + i}]" for i in range(8)] + [f"tstrb{b}"]
+        seq += res[256:]
+        top = int(math.floor((a.result_top - T_ORG) / P_STEP))
+        step = (top - a.result_track) / (len(seq) - 1)
+        if step < 1:
+            bad.append(f"--result-top {a.result_top}: {len(seq)} result pins do not fit")
+            step = 1
+        for i, p in enumerate(seq):
+            k = a.result_track + int(round(i * step))
+            if p.startswith("tstrb"):
+                rstrb[int(p[5:])] = k
+            else:
+                east[p] = k
+    else:
+        for k, p in enumerate(res):
+            east[p] = a.result_track + k
     east["S_AXI_ACLK"] = top_core + 10
 
     # ---- macro, West edge (AXI side): same track as the core-side bit
@@ -258,7 +278,7 @@ def floorplan(a):
     westm["result_axis_tready"] = east["o_result_ready"]
     rtop = a.result_track + len(res) - 1
     for b in range(32):
-        westm[f"result_axis_tstrb[{b}]"] = rtop + 6 + b
+        westm[f"result_axis_tstrb[{b}]"] = rstrb[b] if rstrb else rtop + 6 + b
     ctl = ["S_AXI_ARESETN"] + [p.replace("\\", "") for p in axil_pins(AXI_ADDR)]
     for k, p in enumerate(ctl):
         westm[p] = clk_slot - 4 + 2 * k
@@ -419,7 +439,8 @@ def floorplan(a):
         f"PDN       : met5 pitch {hpitch} offset {hoff_ip:.2f} (core_v11 {hoff}); met4 pitch {VPITCH} "
         f"offset {voff_ip:.2f} (core_v11 {VOFFSET})",
         f"macro pins: W {len(westm)}, E {len(east)} ({len(east) - 260} at the core_v11 West y + DY, "
-        f"259 result at y {sy + track_y(a.result_track):.2f}..{sy + track_y(rtop):.2f}, clock at "
+        f"259 result at y {sy + track_y(min(east[p] for p in res)):.2f}..{sy + track_y(max(east[p] for p in res)):.2f}"
+        f" (macro-local {track_y(min(east[p] for p in res)):.2f}..{track_y(max(east[p] for p in res)):.2f}), clock at "
         f"{sy + track_y(east['S_AXI_ACLK']):.2f}); 768/768 AXIS data bits on one track",
         f"die pins  : W {len(diepos)} (all on the track of their macro pin; S_AXI_ACLK at "
         f"y {track_y(diepos['S_AXI_ACLK']):.2f}, macro top {sy + sh:.2f})",
@@ -495,6 +516,9 @@ def main():
                     help="extra gap east of the macro (the core keeps its own 65.8 um West band)")
     ap.add_argument("--dy-pitches", type=int, default=5, help="DY = this many met5 pitches")
     ap.add_argument("--result-track", type=int, default=15, help="macro pin-track of i_result_data[0]")
+    ap.add_argument("--result-top", type=float, default=0.0,
+                    help="spread the result pins (both macro edges) from --result-track up to this "
+                         "macro-local y (um); 0 = one per pin-track from --result-track")
     ap.add_argument("--clk-above", type=float, default=27.0, help="die clock pin this far above the macro (um)")
     ap.add_argument("--rtl", help="final GemmAxiShell netlist: write the IP top + macro port view")
     ap.add_argument("--out", default=os.path.join(HERE, "designs"))

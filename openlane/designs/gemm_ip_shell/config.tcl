@@ -20,6 +20,12 @@ if { $::env(GEMM_AXIS_CG) } {
     set ::env(VERILOG_FILES_BLACKBOX) [list $::env(DESIGN_DIR)/../gemm_axi_shell/dlclkp_bb.v]
 }
 
+# clock gates with the x4 ICG (rtl_asic/axi/AxisClockGate.v): with dlclkp_1 the
+# GCLK net (14 loads, 0.34 pF, 3.3 ns slew) put the gated banks at 7.2 ns of
+# latency against ~3 ns for the rest, so every input got ~6 hold buffers
+# (ip_shell3: ~5600). axi-* keep dlclkp_1 (no define there).
+lappend ::env(SYNTH_DEFINES) GEMM_ICG_X4
+
 # The die is 160 um wide and 5.9 mm tall: ~3 % of the core area is cells, and
 # most nets are short horizontal bit slices. The long nets are the control
 # fan-outs of the slices (load enable, clock-gate GCLK, reset) along the whole
@@ -47,6 +53,10 @@ set ::env(GEMM_ANT_ECO_ITERS)            3
 # diodes before the first global route (shell_full.tcl, ant_seed.py): one next
 # to every gate on an input-port net or more than this far from its driver
 set ::env(GEMM_ANT_SEED_DIST)            40
+# ant_eco.py adds at most --max-total diodes per call (3000 by default; ip_shell3:
+# 3631 seeded pins, 631 left without a diode). The ant_eco.py installed next to
+# this file is ant_eco_max.py, which passes this limit to gemm_core/ant_eco.py.
+set ::env(GEMM_ANT_ECO_MAX_TOTAL)        8000
 # no extra site left of each diode: with ~2300 seeded diodes the 2-site padding
 # made the global router's diode legalization fail (DPL-0036, ip_shell experiment)
 set ::env(DIODE_PADDING)                 0

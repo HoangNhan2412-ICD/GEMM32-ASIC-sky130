@@ -961,7 +961,7 @@ ip_floorplan() {   # macro + IP floorplan files, from the floorplan options of t
     [ -n "$def" ] && chk=(--check-def "$def")
     python3 "$HERE/gen_ip_files.py" --pe-area "$(cat "$STATE/pe_area.txt")" --core-args "$args" \
         --row-lef "$OL/designs/gemm_row/runs/row_v1/results/final/lef/ProcessingElementRow.lef" \
-        "${chk[@]}" --out "$HERE/designs"
+        --result-top "${IP_RESULT_TOP:-640}" "${chk[@]}" --out "$HERE/designs"
 }
 
 ip_common_install() {   # the gemm_core / gemm_axi_shell files the two IP designs source
@@ -981,7 +981,10 @@ ip_shell_install() {
     mkdir -p "$IP_SHELL_D/src"
     cp "$HERE"/designs/gemm_ip_shell/{config.tcl,shell_full.tcl,ant_seed.py,sizes.tcl,pin_order.cfg} "$IP_SHELL_D/" || return 1
     # route_signoff.tcl looks for these in DESIGN_DIR
-    cp "$HERE"/designs/gemm_core/{ant_eco.py,macro_cross.py} "$IP_SHELL_D/" || return 1
+    cp "$HERE"/designs/gemm_core/macro_cross.py "$IP_SHELL_D/" || return 1
+    # ant_eco.py = ant_eco_max.py (passes GEMM_ANT_ECO_MAX_TOTAL) around the core's script
+    cp "$HERE"/designs/gemm_core/ant_eco.py "$IP_SHELL_D/ant_eco_core.py" || return 1
+    cp "$HERE"/designs/gemm_ip_shell/ant_eco_max.py "$IP_SHELL_D/ant_eco.py" || return 1
     cp "$KIT"/rtl_asic/*.v "$KIT"/rtl_asic/*.vh "$KIT"/rtl_asic/axi/*.v "$IP_SHELL_D/src/"
 }
 

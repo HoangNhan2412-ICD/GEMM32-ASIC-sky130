@@ -289,6 +289,20 @@ def floorplan(a):
             min(v for p, v in east.items() if p.startswith(("o_weight_data", "o_feature_data"))):
         bad.append("result group runs into the stream group")
 
+    # clock-gate groups (GEMM_CG_GROUPS): each group is a run of adjacent bits of
+    # a data bank, so it is compact on the macro only if the pins of each bus
+    # follow the bit order along the edge
+    order_note = []
+    for bus, side in (("o_weight_data", east), ("o_feature_data", east), ("i_result_data", east),
+                      ("weight_axis_tdata", westm), ("feature_axis_tdata", westm),
+                      ("result_axis_tdata", westm)):
+        ks = [side[f"{bus}[{b}]"] for b in range(256)]
+        inc = all(ks[i] < ks[i + 1] for i in range(255))
+        dec = all(ks[i] > ks[i + 1] for i in range(255))
+        if not (inc or dec):
+            bad.append(f"{bus}: pins not in bit order along the edge (clock-gate groups would not be compact)")
+        order_note.append(f"{bus} {'up' if inc else 'down' if dec else 'MIXED'}")
+
     shell_e = exact_side(east, n_shell)
     shell_w = exact_side(westm, n_shell)
 
@@ -442,6 +456,7 @@ def floorplan(a):
         f"259 result at y {sy + track_y(min(east[p] for p in res)):.2f}..{sy + track_y(max(east[p] for p in res)):.2f}"
         f" (macro-local {track_y(min(east[p] for p in res)):.2f}..{track_y(max(east[p] for p in res)):.2f}), clock at "
         f"{sy + track_y(east['S_AXI_ACLK']):.2f}); 768/768 AXIS data bits on one track",
+        "bit order : " + ", ".join(order_note) + " (each bus monotonic in the bit index along the edge: clock-gate groups of adjacent bits are compact)",
         f"die pins  : W {len(diepos)} (all on the track of their macro pin; S_AXI_ACLK at "
         f"y {track_y(diepos['S_AXI_ACLK']):.2f}, macro top {sy + sh:.2f})",
     ]

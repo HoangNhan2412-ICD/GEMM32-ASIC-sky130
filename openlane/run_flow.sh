@@ -1111,6 +1111,8 @@ ip_install() {   # everything gemm_ip needs in $OL (floorplan files must already
     [ -f "$HERE/designs/gemm_ip/clk_latency.tcl" ] && cp "$HERE/designs/gemm_ip/clk_latency.tcl" "$IP_D/"
     cp "$HERE"/designs/gemm_core/{ant_eco.py,macro_cross.py} "$IP_D/" || return 1
     cp "$KIT"/rtl_asic/*.v "$KIT"/rtl_asic/*.vh "$IP_D/src/"
+    # the IP top next to gemm_asic_cfg.vh: the linter finds includes only relative to the file
+    mv "$IP_D/GEMM_top_ip.v" "$IP_D/src/" || return 1
     # the macro run, as the container sees it (relative to the design dir)
     printf '# written by run_flow.sh %s\nset ::env(GEMM_IP_SHELL_RUN) $::env(DESIGN_DIR)/../gemm_ip_shell/runs/%s\n' \
         "$STAMP" "${shell##*/}" > "$IP_D/shell_run.tcl"

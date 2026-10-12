@@ -18,12 +18,16 @@
 // for the same reason as in AxisSkidBuffer: the parent's reset releases a
 // few cycles after the port reset.
 // P_CLOCK_GATE = 1: the data bank is clocked through an AxisClockGate whose
-// enable is the load condition.
+// enable is the load condition. P_CG_GROUPS > 1 splits the bank into that many
+// runs of adjacent bits, each behind its own AxisClockGate (same enable), so
+// each gate drives a short clock net (gemm_ip_shell: one gate for 258 flops
+// along 5.9 mm gave the gated branch ~5 ns of latency).
 // ---------------------------------------------------------------------------
 module AxisFwdSlice
 #(
     parameter integer P_WIDTH      = 258,
-    parameter integer P_CLOCK_GATE = 0
+    parameter integer P_CLOCK_GATE = 0,
+    parameter integer P_CG_GROUPS  = 1
 )
 (
     input                   i_clk,
@@ -58,7 +62,23 @@ always @(posedge i_clk or negedge i_rst_n) begin
 end
 
 generate
-if (P_CLOCK_GATE != 0) begin : g_cg
+if (P_CLOCK_GATE != 0 && P_CG_GROUPS > 1) begin : g_cgn
+    wire [P_WIDTH-1:0] w_data;
+    genvar g;
+    for (g = 0; g < P_CG_GROUPS; g = g + 1) begin : g_grp
+        localparam integer LO = g * P_WIDTH / P_CG_GROUPS;
+        localparam integer HI = (g + 1) * P_WIDTH / P_CG_GROUPS;    // exclusive
+        wire            w_gclk;
+        reg [HI-LO-1:0] r_part;
+        AxisClockGate u_cg (.i_clk(i_clk), .i_en(w_load), .o_gclk(w_gclk));
+        always @(posedge w_gclk)
+            r_part <= i_s_data[HI-1:LO];
+        assign w_data[HI-1:LO] = r_part;
+    end
+    always @(*)
+        r_data = w_data;
+end
+else if (P_CLOCK_GATE != 0) begin : g_cg
     wire w_gclk;
     AxisClockGate u_cg (.i_clk(i_clk), .i_en(w_load), .o_gclk(w_gclk));
     always @(posedge w_gclk)

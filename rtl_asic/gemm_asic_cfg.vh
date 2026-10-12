@@ -60,5 +60,10 @@
 `ifndef GEMM_AXIS_CG
 `define GEMM_AXIS_CG 1
 `endif
+// clock gates per data bank of a stream slice (AxisSkidBuffer/AxisFwdSlice
+// P_CG_GROUPS): 1 = one gate per bank; gemm_ip_shell builds with 16.
+`ifndef GEMM_CG_GROUPS
+`define GEMM_CG_GROUPS 1
+`endif
 
 `endif

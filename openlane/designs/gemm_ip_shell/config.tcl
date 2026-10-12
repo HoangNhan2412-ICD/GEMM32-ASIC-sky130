@@ -25,6 +25,13 @@ if { $::env(GEMM_AXIS_CG) } {
 # latency against ~3 ns for the rest, so every input got ~6 hold buffers
 # (ip_shell3: ~5600). axi-* keep dlclkp_1 (no define there).
 lappend ::env(SYNTH_DEFINES) GEMM_ICG_X4
+# and 16 clock gates per data bank, each on a run of adjacent bits
+# (AxisSkidBuffer / AxisFwdSlice P_CG_GROUPS): with one gate per bank the gated
+# branch still had ~5.2 ns of latency against ~2.8 ns (ip_shell4, dlclkp_4).
+# The pins of every bus follow the bit order (gen_ip_files.py checks it), so
+# each group sits in one stretch of the macro.
+if { ![info exists ::env(GEMM_CG_GROUPS)] } { set ::env(GEMM_CG_GROUPS) 16 }
+lappend ::env(SYNTH_DEFINES) GEMM_CG_GROUPS=$::env(GEMM_CG_GROUPS)
 
 # The die is 160 um wide and 5.9 mm tall: ~3 % of the core area is cells, and
 # most nets are short horizontal bit slices. The long nets are the control

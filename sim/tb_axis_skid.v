@@ -5,6 +5,7 @@
 //              m_ready by design, so the "s_ready only changes on a clock
 //              edge" check is off)
 //   -DTB_CG  : with P_CLOCK_GATE = 1 (data banks behind AxisClockGate)
+//   -DTB_CG_GROUPS=n : n clock gates per data bank (P_CG_GROUPS, default 1)
 //
 // The source sends the numbers 0, 1, 2, ... and the sink must see exactly
 // that sequence: nothing lost, nothing repeated, nothing out of order. Four
@@ -42,10 +43,14 @@ localparam integer CG = 1;
 `else
 localparam integer CG = 0;
 `endif
+`ifndef TB_CG_GROUPS
+`define TB_CG_GROUPS 1
+`endif
+localparam integer CGG = `TB_CG_GROUPS;     // clock gates per data bank
 `ifdef TB_FWD
-AxisFwdSlice #(.P_WIDTH(W), .P_CLOCK_GATE(CG)) dut (
+AxisFwdSlice #(.P_WIDTH(W), .P_CLOCK_GATE(CG), .P_CG_GROUPS(CGG)) dut (
 `else
-AxisSkidBuffer #(.P_WIDTH(W), .P_CLOCK_GATE(CG)) dut (
+AxisSkidBuffer #(.P_WIDTH(W), .P_CLOCK_GATE(CG), .P_CG_GROUPS(CGG)) dut (
 `endif
     .i_clk(clk), .i_rst_n(rst_n),
     .i_s_valid(s_valid), .o_s_ready(s_ready), .i_s_data(s_data),
@@ -56,9 +61,9 @@ AxisSkidBuffer #(.P_WIDTH(W), .P_CLOCK_GATE(CG)) dut (
 wire w_wv, w_wr;
 wire [257:0] w_wd;
 `ifdef TB_FWD
-AxisFwdSlice #(.P_WIDTH(258), .P_CLOCK_GATE(CG)) dut_wide (
+AxisFwdSlice #(.P_WIDTH(258), .P_CLOCK_GATE(CG), .P_CG_GROUPS(CGG)) dut_wide (
 `else
-AxisSkidBuffer #(.P_WIDTH(258), .P_CLOCK_GATE(CG)) dut_wide (
+AxisSkidBuffer #(.P_WIDTH(258), .P_CLOCK_GATE(CG), .P_CG_GROUPS(CGG)) dut_wide (
 `endif
     .i_clk(clk), .i_rst_n(rst_n),
     .i_s_valid(1'b0), .o_s_ready(w_wr), .i_s_data(258'd0),
@@ -187,9 +192,9 @@ initial begin
     if (got != sent) fail("beats left inside after draining");
     $display("sent %0d, received %0d, errors %0d", sent, got, errors);
 `ifdef TB_FWD
-    $display("dut: AxisFwdSlice, P_CLOCK_GATE=%0d", CG);
+    $display("dut: AxisFwdSlice, P_CLOCK_GATE=%0d, P_CG_GROUPS=%0d", CG, CGG);
 `else
-    $display("dut: AxisSkidBuffer, P_CLOCK_GATE=%0d", CG);
+    $display("dut: AxisSkidBuffer, P_CLOCK_GATE=%0d, P_CG_GROUPS=%0d", CG, CGG);
 `endif
     $display("%s", errors == 0 ? "SKID PASS" : "SKID FAIL");
     $finish;

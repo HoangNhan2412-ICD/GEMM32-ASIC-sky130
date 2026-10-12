@@ -17,7 +17,9 @@ set ::env(DESIGN_NAME) "GEMM_top"
 
 # RTL: the IP top (no #(...) on the macro instance, gen_ip_files.py --rtl) + the core
 set SRC $::env(DESIGN_DIR)/src
-set ::env(VERILOG_FILES) [list $::env(DESIGN_DIR)/GEMM_top_ip.v \
+# (GEMM_top_ip.v is installed in src/, next to gemm_asic_cfg.vh: OpenLane's
+# linter resolves includes only relative to the including file)
+set ::env(VERILOG_FILES) [list $SRC/GEMM_top_ip.v \
     $SRC/GEMM_core.v $SRC/In_buffer.v $SRC/Buffer_feeder.v $SRC/Out_buffer.v \
     $SRC/Gemm_compute_core.v $SRC/PE_array.v $SRC/FeatureSkew.v $SRC/OutputDeskew.v \
     $SRC/DelayLine.v $SRC/sram_1r1w.v $SRC/Signed_adder.v $SRC/Right_shifter.v]

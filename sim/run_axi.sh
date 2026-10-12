@@ -33,8 +33,9 @@ SLICES=( "$A/AxisSkidBuffer.v" "$A/AxisFwdSlice.v" "$A/AxisClockGate.v" )
 
 # ---- 1. slices
 echo "== stream slices"
-for v in skid skid_cg fwd fwd_cg; do
-    d=(); case $v in fwd*) d+=(-DTB_FWD) ;; esac; case $v in *_cg) d+=(-DTB_CG) ;; esac
+for v in skid skid_cg skid_cg16 fwd fwd_cg fwd_cg16; do
+    d=(); case $v in fwd*) d+=(-DTB_FWD) ;; esac; case $v in *_cg*) d+=(-DTB_CG) ;; esac
+    case $v in *_cg16) d+=(-DTB_CG_GROUPS=16) ;; esac
     if iverilog -g2012 "${d[@]}" -o "$OUT/slice_$v.vvp" "$KIT/sim/tb_axis_skid.v" "${SLICES[@]}" \
            > "$OUT/slice_${v}_build.log" 2>&1 \
        && ( cd "$OUT" && vvp -n "slice_$v.vvp" > "slice_$v.log" 2>&1 ) && grep -q "SKID PASS" "$OUT/slice_$v.log"; then
@@ -48,14 +49,15 @@ done
 # ---- 2. shell alone
 echo "== GemmAxiShell against a core model"
 SHELL_SRC=( "$A/GemmAxiShell.v" "$A/AxiLiteControlRegs.v" "${SLICES[@]}" "$KIT/rtl_asic/ResetSync.v" )
-for v in 0_0 1_0 1_1 2_0 2_1; do
-    r=${v%_*}; c=${v#*_}
-    if iverilog -g2012 -I "$KIT/rtl_asic" -DGEMM_AXIS_REG="$r" -DGEMM_AXIS_CG="$c" -o "$OUT/shell_$v.vvp" \
+# 2_1_16: lean + clock gating with 16 gates per data bank (GEMM_CG_GROUPS, as gemm_ip_shell)
+for v in 0_0 1_0 1_1 2_0 2_1 2_1_16; do
+    IFS=_ read -r r c g <<< "$v"; g=${g:-1}
+    if iverilog -g2012 -I "$KIT/rtl_asic" -DGEMM_AXIS_REG="$r" -DGEMM_AXIS_CG="$c" -DGEMM_CG_GROUPS="$g" -o "$OUT/shell_$v.vvp" \
            "$KIT/sim/tb_axi_shell.v" "${SHELL_SRC[@]}" > "$OUT/shell_${v}_build.log" 2>&1 \
        && ( cd "$OUT" && vvp -n "shell_$v.vvp" > "shell_$v.log" 2>&1 ) && grep -q "SHELL PASS" "$OUT/shell_$v.log"; then
-        pass "GEMM_AXIS_REG=$r CG=$c: $(grep -E '^job 1:' "$OUT/shell_$v.log")"
+        pass "GEMM_AXIS_REG=$r CG=$c CG_GROUPS=$g: $(grep -E '^job 1:' "$OUT/shell_$v.log")"
     else
-        fail "GEMM_AXIS_REG=$r CG=$c (see sim/build_axi/shell_$v.log, shell_${v}_build.log)"
+        fail "GEMM_AXIS_REG=$r CG=$c CG_GROUPS=$g (see sim/build_axi/shell_$v.log, shell_${v}_build.log)"
         grep -E "ERROR|timeout" "$OUT/shell_$v.log" 2>/dev/null | head -5 | sed 's/^/       /'
     fi
 done
@@ -67,12 +69,12 @@ if command -v verilator >/dev/null; then
     # AXI4-Lite template, on purpose (same as the KV260 IP). LATCH: the behavioural ICG
     # model in AxisClockGate (synthesis uses the sky130 dlclkp cell instead).
     Q="-Wno-DECLFILENAME -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-PINCONNECTEMPTY -Wno-WIDTHEXPAND -Wno-SYNCASYNCNET -Wno-LATCH"
-    for v in 0_0 1_0 1_1 2_0 2_1; do
-        r=${v%_*}; c=${v#*_}
-        if verilator --lint-only -Wall $Q -I"$KIT/rtl_asic" -DGEMM_AXIS_REG=$r -DGEMM_AXIS_CG=$c --top-module GemmAxiShell \
+    for v in 0_0 1_0 1_1 2_0 2_1 2_1_16; do
+        IFS=_ read -r r c g <<< "$v"; g=${g:-1}
+        if verilator --lint-only -Wall $Q -I"$KIT/rtl_asic" -DGEMM_AXIS_REG=$r -DGEMM_AXIS_CG=$c -DGEMM_CG_GROUPS=$g --top-module GemmAxiShell \
                "${SHELL_SRC[@]}" > "$OUT/lint_shell_$v.log" 2>&1; then
-            pass "GemmAxiShell REG=$r CG=$c: lint clean"
-        else fail "GemmAxiShell REG=$r CG=$c: lint (see sim/build_axi/lint_shell_$v.log)"; fi
+            pass "GemmAxiShell REG=$r CG=$c CG_GROUPS=$g: lint clean"
+        else fail "GemmAxiShell REG=$r CG=$c CG_GROUPS=$g: lint (see sim/build_axi/lint_shell_$v.log)"; fi
     done
 else
     echo "== verilator not installed: lint skipped"

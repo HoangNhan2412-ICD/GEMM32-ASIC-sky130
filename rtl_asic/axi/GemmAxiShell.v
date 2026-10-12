@@ -57,7 +57,8 @@ module GemmAxiShell
     parameter integer P_AXI_LITE_ADDR_WIDTH = 6,
     parameter integer P_STREAM_WIDTH        = 256,      // 32 lanes x 8 bit, as the core
     parameter integer P_AXIS_REG            = `GEMM_AXIS_REG,
-    parameter integer P_AXIS_CG             = `GEMM_AXIS_CG
+    parameter integer P_AXIS_CG             = `GEMM_AXIS_CG,
+    parameter integer P_CG_GROUPS           = `GEMM_CG_GROUPS     // clock gates per data bank
 )
 (
     // ---- AXI4-Lite control (clock and reset of the whole IP)
@@ -287,7 +288,7 @@ else if (P_AXIS_REG == 1) begin : g_reg
     // ---- feature: {full, last, data} through a skid buffer
     wire                      w_f_valid;
     wire [P_STREAM_WIDTH+1:0] w_f_beat;
-    AxisSkidBuffer #(.P_WIDTH(P_STREAM_WIDTH + 2), .P_CLOCK_GATE(P_AXIS_CG)) u_feature_slice (
+    AxisSkidBuffer #(.P_WIDTH(P_STREAM_WIDTH + 2), .P_CLOCK_GATE(P_AXIS_CG), .P_CG_GROUPS(P_CG_GROUPS)) u_feature_slice (
         .i_clk     (S_AXI_ACLK),
         .i_rst_n   (w_rst_n),
         .i_s_valid (feature_axis_tvalid),
@@ -304,7 +305,7 @@ else if (P_AXIS_REG == 1) begin : g_reg
     // ---- weight: same
     wire                      w_w_valid;
     wire [P_STREAM_WIDTH+1:0] w_w_beat;
-    AxisSkidBuffer #(.P_WIDTH(P_STREAM_WIDTH + 2), .P_CLOCK_GATE(P_AXIS_CG)) u_weight_slice (
+    AxisSkidBuffer #(.P_WIDTH(P_STREAM_WIDTH + 2), .P_CLOCK_GATE(P_AXIS_CG), .P_CG_GROUPS(P_CG_GROUPS)) u_weight_slice (
         .i_clk     (S_AXI_ACLK),
         .i_rst_n   (w_rst_n),
         .i_s_valid (weight_axis_tvalid),
@@ -320,7 +321,7 @@ else if (P_AXIS_REG == 1) begin : g_reg
 
     // ---- result: {last, data} through a skid buffer
     wire [P_STREAM_WIDTH:0] w_r_beat;
-    AxisSkidBuffer #(.P_WIDTH(P_STREAM_WIDTH + 1), .P_CLOCK_GATE(P_AXIS_CG)) u_result_slice (
+    AxisSkidBuffer #(.P_WIDTH(P_STREAM_WIDTH + 1), .P_CLOCK_GATE(P_AXIS_CG), .P_CG_GROUPS(P_CG_GROUPS)) u_result_slice (
         .i_clk     (S_AXI_ACLK),
         .i_rst_n   (w_rst_n),
         .i_s_valid (i_result_valid),
@@ -337,7 +338,7 @@ else begin : g_lean
     // ---- feature / weight: one-entry forward slices, {full, last, data}
     wire                      w_f_valid;
     wire [P_STREAM_WIDTH+1:0] w_f_beat;
-    AxisFwdSlice #(.P_WIDTH(P_STREAM_WIDTH + 2), .P_CLOCK_GATE(P_AXIS_CG)) u_feature_slice (
+    AxisFwdSlice #(.P_WIDTH(P_STREAM_WIDTH + 2), .P_CLOCK_GATE(P_AXIS_CG), .P_CG_GROUPS(P_CG_GROUPS)) u_feature_slice (
         .i_clk     (S_AXI_ACLK),
         .i_rst_n   (w_rst_n),
         .i_s_valid (feature_axis_tvalid),
@@ -353,7 +354,7 @@ else begin : g_lean
 
     wire                      w_w_valid;
     wire [P_STREAM_WIDTH+1:0] w_w_beat;
-    AxisFwdSlice #(.P_WIDTH(P_STREAM_WIDTH + 2), .P_CLOCK_GATE(P_AXIS_CG)) u_weight_slice (
+    AxisFwdSlice #(.P_WIDTH(P_STREAM_WIDTH + 2), .P_CLOCK_GATE(P_AXIS_CG), .P_CG_GROUPS(P_CG_GROUPS)) u_weight_slice (
         .i_clk     (S_AXI_ACLK),
         .i_rst_n   (w_rst_n),
         .i_s_valid (weight_axis_tvalid),
@@ -369,7 +370,7 @@ else begin : g_lean
 
     // ---- result: full skid buffer (its data comes through the core's shifter)
     wire [P_STREAM_WIDTH:0] w_r_beat;
-    AxisSkidBuffer #(.P_WIDTH(P_STREAM_WIDTH + 1), .P_CLOCK_GATE(P_AXIS_CG)) u_result_slice (
+    AxisSkidBuffer #(.P_WIDTH(P_STREAM_WIDTH + 1), .P_CLOCK_GATE(P_AXIS_CG), .P_CG_GROUPS(P_CG_GROUPS)) u_result_slice (
         .i_clk     (S_AXI_ACLK),
         .i_rst_n   (w_rst_n),
         .i_s_valid (i_result_valid),

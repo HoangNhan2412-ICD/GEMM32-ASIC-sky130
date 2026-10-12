@@ -30,11 +30,15 @@
 // AxisClockGate whose enable is exactly that bank's load condition, so the
 // banks see no clock edge at all in the cycles they hold their value. Same
 // behaviour cycle for cycle; only the clock power of ~2 x P_WIDTH flops goes.
+// P_CG_GROUPS > 1 splits each bank into that many runs of adjacent bits, each
+// behind its own AxisClockGate (same enable as the bank), so each gate drives
+// a short clock net.
 // ---------------------------------------------------------------------------
 module AxisSkidBuffer
 #(
     parameter integer P_WIDTH      = 258,
-    parameter integer P_CLOCK_GATE = 0
+    parameter integer P_CLOCK_GATE = 0,
+    parameter integer P_CG_GROUPS  = 1
 )
 (
     input                   i_clk,
@@ -85,7 +89,29 @@ wire w_load_m = w_m_free & (r_s_valid | w_s_accept);    // main takes the skid b
 wire w_load_s = ~w_m_free & w_s_accept;                 // skid parks the new beat
 
 generate
-if (P_CLOCK_GATE != 0) begin : g_cg
+if (P_CLOCK_GATE != 0 && P_CG_GROUPS > 1) begin : g_cgn
+    wire [P_WIDTH-1:0] w_m_data, w_s_data;
+    genvar g;
+    for (g = 0; g < P_CG_GROUPS; g = g + 1) begin : g_grp
+        localparam integer LO = g * P_WIDTH / P_CG_GROUPS;
+        localparam integer HI = (g + 1) * P_WIDTH / P_CG_GROUPS;    // exclusive
+        wire            w_gclk_m, w_gclk_s;
+        reg [HI-LO-1:0] r_m_part, r_s_part;
+        AxisClockGate u_cg_m (.i_clk(i_clk), .i_en(w_load_m), .o_gclk(w_gclk_m));
+        AxisClockGate u_cg_s (.i_clk(i_clk), .i_en(w_load_s), .o_gclk(w_gclk_s));
+        always @(posedge w_gclk_m)
+            r_m_part <= r_s_valid ? r_s_part : i_s_data[HI-1:LO];
+        always @(posedge w_gclk_s)
+            r_s_part <= i_s_data[HI-1:LO];
+        assign w_m_data[HI-1:LO] = r_m_part;
+        assign w_s_data[HI-1:LO] = r_s_part;
+    end
+    always @(*) begin
+        r_m_data = w_m_data;
+        r_s_data = w_s_data;
+    end
+end
+else if (P_CLOCK_GATE != 0) begin : g_cg
     wire w_gclk_m, w_gclk_s;
     AxisClockGate u_cg_m (.i_clk(i_clk), .i_en(w_load_m), .o_gclk(w_gclk_m));
     AxisClockGate u_cg_s (.i_clk(i_clk), .i_en(w_load_s), .o_gclk(w_gclk_s));

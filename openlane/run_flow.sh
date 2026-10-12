@@ -1341,8 +1341,10 @@ st_ip_check() {   # signoff of an IP run, every check that does not need OpenLan
     done
     grep -qE "^ *PASS +hold worst slack" "$out/check_openlane_run.txt" && pass "hold" || fail "hold (signoff, typical)"
     # Magic flags: every one must be an abstract-view artefact next to a macro (full GDS)
-    v=$(awk -F'= ' '/Magic_violations/{print $2+0}' "$out/check_openlane_run.txt")
-    if [ "${v:-x}" = 0 ]; then pass "Magic_violations = 0"
+    # a MISSING metric (Magic not run, e.g. the flow stopped at LVS) stays empty, not 0
+    v=$(awk -F'= ' '/Magic_violations = /{print $2+0}' "$out/check_openlane_run.txt")
+    if [ -z "$v" ]; then fail "Magic_violations missing: Magic DRC did not run"
+    elif [ "$v" = 0 ]; then pass "Magic_violations = 0"
     elif [ -n "$v" ] && "$KIT/tools/magic_macro_check.sh" "$RUNDIR" > "$out/magic_macro_check.txt" 2>&1; then
         pass "Magic: $v flags, all next to macros and clean on the full GDS (tools/magic_macro_check.sh)"
         tail -n 4 "$out/magic_macro_check.txt" | sed 's/^/    /'

@@ -401,6 +401,12 @@ def floorplan(a):
         want = 1 if n.endswith("u_row") else 2 if "u_macro" in n else 50
         if n_pairs(lo, hi, 0.5) < want:
             bad.append(f"too few met5 pairs over the power pins of {n}")
+    # cells west of the AXI macro need a tap column clear of its tap halo (ip_v2: a
+    # 20.24 um band got no tap at all, so its wells floated and LVS failed)
+    band = sx - 12 * 0.46                    # core starts 5.52 um from the die edge
+    need = float(env["FP_TAP_HORIZONTAL_HALO"]) + 2 * float(env.get("FP_TAPCELL_DIST", 13))
+    if band < need:
+        bad.append(f"band west of the AXI macro {band:.2f} um < {need:.2f} (tap halo + 2 x tap distance)")
     n_expect = int(env.get("GEMM_CORE_MACROS", 112)) + 1
     if len(place) != n_expect:
         bad.append(f"{len(place)} macros, expected {n_expect}")
@@ -524,7 +530,8 @@ def main():
     ap.add_argument("--check-def", help="final DEF of that core run: the computed West pins must match it")
     ap.add_argument("--row-lef", help="LEF of the row macro (size)")
     ap.add_argument("--geometry", help="openlane/state/geometry.txt (row size if no --row-lef)")
-    ap.add_argument("--shell-x", type=float, default=25.76, help="x of the AXI macro (um)")
+    ap.add_argument("--shell-x", type=float, default=51.52,
+                    help="x of the AXI macro (um); the band west of it must hold a tap column")
     ap.add_argument("--shell-w", type=float, default=160.08, help="width of the AXI macro (um)")
     ap.add_argument("--shell-h", type=float, default=5932.32, help="height of the AXI macro (um)")
     ap.add_argument("--shell-gap", type=float, default=0.0,

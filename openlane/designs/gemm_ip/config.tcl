@@ -63,7 +63,8 @@ set ::env(BASE_SDC_FILE) $::env(DESIGN_DIR)/ip.sdc
 # (ip_route_signoff.tcl, ip_timing_eco.tcl): the global-route antenna diodes
 # come after the last resizer step; ip_v2 had 22 of them on one o21ai_1 net,
 # Typical setup -2.00 ns. repair_timing -setup (-skip_pin_swap, at most 5 %
-# buffers) only when the internal setup slack is negative; no hold repair
+# buffers) only when a cell -> cell path (no port, no macro pin) has negative
+# setup slack; no hold repair
 # (hold as fixed after CTS, checked on every corner by timing_gate.py),
 # repair_design off; one pass per round (the global route after it repairs
 # no antennas, see gemm_ip_reroute).
@@ -71,6 +72,14 @@ set ::env(GEMM_IP_TIMING_ECO) 1
 set ::env(GEMM_IP_TIMING_ECO_PASSES) 1
 set ::env(GEMM_IP_TIMING_ECO_MAX_BUFFER_PERCENT) 5
 set ::env(GEMM_IP_TIMING_ECO_DESIGN) 0
+
+# ---- signoff STA with the macro libs (EXTRA_LIBS: SRAM, rows, AXI macro).
+# OpenLane's default (0) reads only the standard-cell libs at signoff and makes
+# every macro a black box: ip_v2 signed off 8 violating endpoints at -2.00 ns,
+# with the macro libs it has 2985 at -4.55 ns (SRAM read-add-write, AXI outputs
+# across the die). The macros have one (typical) lib each, read for every corner:
+# paths through a macro pin are judged at Typical only (tools/timing_gate.py).
+set ::env(STA_MULTICORNER_READ_LIBS) 1
 
 if { [file exists $::env(DESIGN_DIR)/overrides.tcl] } {
     puts "\[INFO\]: gemm_ip: applying overrides.tcl"

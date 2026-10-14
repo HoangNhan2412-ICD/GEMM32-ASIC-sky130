@@ -12,8 +12,8 @@
 #
 # Steps as OpenLane's resizer_routing_timing.tcl (global route, parasitics from
 # it, repair_timing, detailed placement, check_placement), except:
-#   - repair_timing only if the internal setup slack (paths that neither start
-#     at a data input port nor end at an output port) is negative;
+#   - repair_timing only if a cell -> cell path (standard cells at both ends,
+#     no port, no macro pin) has negative setup slack;
 #   - -skip_pin_swap on every repair_timing (as the patched OpenLane scripts);
 #   - Typical library only (see the read below);
 #   - no hold repair: hold stays as fixed after CTS, timing_gate.py checks it
@@ -65,19 +65,32 @@ global_route {*}$arg_list
 source $::env(SCRIPTS_DIR)/openroad/common/set_rc.tcl
 estimate_parasitics -global_routing
 
-# worst setup slack (s) of the internal paths, "" if none is negative; the pins
-# of a path run from the endpoint back to the clock source (or the input port)
+# worst setup slack (s) of the cell -> cell paths (a standard cell at both ends,
+# no port, no macro pin), "" if none is negative, and their count. Paths to and
+# from macro pins (SRAM, rows, AXI) are left alone: ip_v3 had 2350 of them at
+# -2.8 ns (AXI output across the die, SRAM read-add-write in half a cycle),
+# which repair_timing cannot fix (-0.03 ns for 5 cells).
+proc eco_is_cell {pin} {
+    if { [string first "/" $pin] < 0 } { return 0 }
+    set p [sta::find_pin $pin]
+    if { $p eq "NULL" || $p eq "" } { return 0 }
+    set ref [get_property [$p instance] ref_name]
+    if { ![info exists ::eco_cell($ref)] } {
+        set m [[ord::get_db] findMaster $ref]
+        set ::eco_cell($ref) [expr {$m ne "NULL" && ![$m isBlock]}]
+    }
+    return $::eco_cell($ref)
+}
 proc eco_internal_setup {} {
     set worst ""
     set n 0
-    foreach pe [find_timing_paths -path_delay max -group_count 1000 -endpoint_count 1 -sort_by_slack -slack_max 0] {
-        set pins [[$pe path] pins]
-        set e [get_full_name [lindex $pins 0]]
-        set s [get_full_name [lindex $pins end]]
-        if { [string first "/" $e] < 0 } { continue }
-        if { [string first "/" $s] < 0 && $s ne $::env(CLOCK_PORT) } { continue }
-        incr n
+    foreach pe [find_timing_paths -path_delay max -group_count 200000 -endpoint_count 1 -sort_by_slack -slack_max 0] {
+        set e [get_full_name [get_property $pe endpoint]]
+        set s [get_full_name [get_property $pe startpoint]]
+        if { ![eco_is_cell $e] || ![eco_is_cell $s] } { continue }
         set sl [$pe slack]
+        if { $sl >= 0 } { continue }
+        incr n
         if { $worst eq "" || $sl < $worst } { set worst $sl }
     }
     return [list $worst $n]
@@ -92,7 +105,7 @@ proc eco_masters {} {
 proc eco_report {tag} {
     set i [eco_internal_setup]
     set iw [expr {[lindex $i 0] eq "" ? "none negative" : "[format %.3f [expr {[lindex $i 0] * 1e9}]] ns on [lindex $i 1] endpoint(s)"}]
-    puts "gemm_timing_eco: $tag: internal setup $iw;\
+    puts "gemm_timing_eco: $tag: cell->cell setup $iw;\
           all setup wns [format %.3f [expr {[sta::worst_slack_cmd max] * 1e9}]]\
           tns [format %.3f [expr {[sta::total_negative_slack_cmd max] * 1e9}]],\
           hold wns [format %.3f [expr {[sta::worst_slack_cmd min] * 1e9}]] (ns, Typical, global-route parasitics)"
@@ -102,7 +115,7 @@ proc eco_report {tag} {
 set before [eco_masters]
 set iw [eco_report "before"]
 if { $iw eq "" || $iw >= 0 } {
-    puts "gemm_timing_eco: internal setup not negative - repair skipped"
+    puts "gemm_timing_eco: no negative cell->cell setup slack - repair skipped"
 } else {
     if { $do_design } {
         repair_design

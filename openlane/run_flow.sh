@@ -1346,8 +1346,10 @@ st_ip_check() {   # signoff of an IP run, every check that does not need OpenLan
         grep -qE "^ *PASS +$item" "$out/check_openlane_run.txt" && pass "$item" \
             || fail "$item: $(grep -E " $item" "$out/check_openlane_run.txt" | sed 's/^ *//')"
     done
-    # timing verdict (tools/timing_gate.py): Typical setup internal >= 0, Typical setup
-    # on I/O >= 0 or not worse than core_v11, hold >= 0 in every corner; Slowest only printed
+    # timing verdict (tools/timing_gate.py), by path kind (cell, SRAM, row, AXI macro, port):
+    # macros timed at signoff, clock period = GEMM_GATE_PERIOD [10 ns], Typical setup of
+    # every internal kind >= 0, I/O >= 0 or not worse than core_v11, hold >= 0 for every
+    # kind at Typical and without a macro pin at Slowest/Fastest; Slowest setup only printed
     if python3 "$KIT/tools/timing_gate.py" "$RUNDIR" --ref "$(ip_core_run)" > "$out/timing_gate.txt" 2>&1; then
         pass "timing: $(tail -n 1 "$out/timing_gate.txt")"
     else fail "timing: $(tail -n 1 "$out/timing_gate.txt")"; fi

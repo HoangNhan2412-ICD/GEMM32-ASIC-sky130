@@ -65,10 +65,10 @@ set ::env(BASE_SDC_FILE) $::env(DESIGN_DIR)/ip.sdc
 # Typical setup -2.00 ns. repair_timing -setup (-skip_pin_swap, at most 5 %
 # buffers) only when the internal setup slack is negative; no hold repair
 # (hold as fixed after CTS, checked on every corner by timing_gate.py),
-# repair_design off; at most 2 passes per round (a global route after a
-# repair may add diodes).
+# repair_design off; one pass per round (the global route after it repairs
+# no antennas, see gemm_ip_reroute).
 set ::env(GEMM_IP_TIMING_ECO) 1
-set ::env(GEMM_IP_TIMING_ECO_PASSES) 2
+set ::env(GEMM_IP_TIMING_ECO_PASSES) 1
 set ::env(GEMM_IP_TIMING_ECO_MAX_BUFFER_PERCENT) 5
 set ::env(GEMM_IP_TIMING_ECO_DESIGN) 0
 

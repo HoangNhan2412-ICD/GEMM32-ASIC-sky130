@@ -4,7 +4,8 @@
 # gemm_core keeps its own file unchanged. Differences from the original:
 #   - gemm_ip_timing_eco: after every global route of the antenna ECO rounds
 #     (its diodes are in by then), ip_timing_eco.tcl repairs setup (no hold) on the
-#     global-route parasitics; if it changed cells, global route again.
+#     global-route parasitics; if it changed cells, global route again
+#     without diode repair (gemm_ip_reroute).
 #     GEMM_IP_TIMING_ECO 1 turns it on (default 0 = the original flow). Each
 #     round starts again from the pre-global-route database (as the diodes of
 #     ant_eco.py do), so the repair is redone per round and the kept round has its own.
@@ -252,6 +253,33 @@ proc gemm_macro_cross {round} {
 # repaired nets died with SIGSEGV in core layout v3, see gemm_core/config.tcl),
 # the views go back to the ones from before this step, a warning is printed and
 # the flow goes on.
+# global route again after a timing ECO that changed cells: every net gets a
+# fresh route before DRT. The diodes of the first global route of the round are
+# in the database already, so no repair_antennas this time (it names its diodes
+# ANTENNA_1.. again: ip_v3 stopped on ODB-0385, duplicate ANTENNA_1); the nets
+# the ECO buffered are left to DRT's antenna repair and the antenna ECO rounds.
+# If it fails, the views and guides of the round's first global route (before
+# the ECO) come back and the flow goes on; returns 1 on success.
+proc gemm_ip_reroute {round pass pre_eco} {
+    set grt_ant $::env(GRT_REPAIR_ANTENNAS)
+    set ::env(GRT_REPAIR_ANTENNAS) 0
+    set ::env(EXIT_ON_ERROR) 0
+    set t0 [clock seconds]
+    set failed [catch { global_routing } e]
+    set ::env(EXIT_ON_ERROR) 1
+    set ::env(GRT_REPAIR_ANTENNAS) $grt_ant
+    set secs [expr {[clock seconds] - $t0}]
+    if { $failed } {
+        gemm_set_views [lindex $pre_eco 0]
+        set_guide [lindex $pre_eco 1]
+        puts_warn "gemm: global route after timing ECO round $round pass $pass failed after $secs s ($e) - views from before the ECO kept, continuing"
+        exec echo "round $round pass $pass: global route after timing eco FAILED after $secs s, views from before the eco restored" >> $::env(routing_reports)/ant_eco_rounds.txt
+        return 0
+    }
+    exec echo "round $round pass $pass: global route after timing eco (no diode repair), $secs s" >> $::env(routing_reports)/ant_eco_rounds.txt
+    return 1
+}
+
 proc gemm_ip_timing_eco {round pass} {
     if { ![info exists ::env(GEMM_IP_TIMING_ECO)] || !$::env(GEMM_IP_TIMING_ECO) } { return 0 }
     set before [gemm_views]
@@ -333,11 +361,12 @@ proc gemm_routing {} {
             }
         }
         global_routing
-        # timing ECO, then a fresh global route if it changed cells (that global
-        # route may add diodes again, so check once more, GEMM_IP_TIMING_ECO_PASSES)
-        set passes [expr {[info exists ::env(GEMM_IP_TIMING_ECO_PASSES)] ? $::env(GEMM_IP_TIMING_ECO_PASSES) : 2}]
+        # timing ECO, then a fresh global route if it changed cells, up to
+        # GEMM_IP_TIMING_ECO_PASSES times (see gemm_ip_reroute)
+        set passes [expr {[info exists ::env(GEMM_IP_TIMING_ECO_PASSES)] ? $::env(GEMM_IP_TIMING_ECO_PASSES) : 1}]
+        set pre_eco [list [gemm_views] $::env(CURRENT_GUIDE)]
         for { set pass 1 } { $pass <= $passes && [gemm_ip_timing_eco $round $pass] } { incr pass } {
-            global_routing
+            if { ![gemm_ip_reroute $round $pass $pre_eco] } { break }
         }
         gemm_macro_cross $round
         if { $::env(RUN_FILL_INSERTION) } { ins_fill_cells }

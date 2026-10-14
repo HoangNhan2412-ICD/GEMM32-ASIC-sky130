@@ -310,6 +310,12 @@ proc gemm_ip_timing_eco {round pass} {
     set mem "?"
     catch { regexp {peak memory (\S+) MB} [exec grep "gemm_timing_eco: runtime" $log] -> mem }
     exec echo "round $round pass $pass: timing eco changed $n, $secs s, peak $mem MB" >> $::env(routing_reports)/ant_eco_rounds.txt
+    if { $n == 0 } {
+        # nothing changed, but its detailed placement (keep_rows_clear) may have
+        # moved cells: keep the views the guides were made for (ip_v3r stopped on
+        # DRT-0218, guide not connected, after a 0-change ECO moved 23 cells)
+        gemm_set_views $before
+    }
     return [expr {$n > 0}]
 }
 

@@ -2,7 +2,8 @@
 # COPY of gemm_core/resume.tcl (commit 2b55588) for the design gemm_ip.
 # Differences, nothing else changed:
 #   - prep -design gemm_ip (resume.tcl has gemm_core written in);
-#   - routing + signoff from ../gemm_core/route_signoff.tcl (resume.tcl sources
+#   - routing + signoff from ip_route_signoff.tcl (the gemm_ip copy of
+#     gemm_core/route_signoff.tcl, with the timing ECO; resume.tcl sources
 #     route_signoff.tcl from its own directory);
 #   - the probe mode runs ../gemm_core/grt_probe.tcl.
 # gemm_core/resume.tcl stays untouched so core-route keeps running exactly as
@@ -215,4 +216,4 @@ if { $GEMM_MODE eq "probe" } {
 }
 
 # ---- 5b. route: routing + signoff, shared with core_full.tcl
-source $here/../gemm_core/route_signoff.tcl
+source $here/ip_route_signoff.tcl

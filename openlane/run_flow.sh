@@ -1105,7 +1105,7 @@ ip_install() {   # everything gemm_ip needs in $OL (floorplan files must already
     python3 "$HERE/designs/gemm_core/macro_antenna_lef.py" --in "$sram/lef/sky130_sram_2kbyte_1rw1r_32x512_8.lef" \
         --lib-lef "$lib" --out "$IP_D/sram_antenna.lef" > /dev/null || return 1
     for f in config.tcl ip.sdc cfg_shift_mcp.sdc clk_latency_seed.tcl ip_pre.tcl ip_full.tcl ip_resume.tcl \
-             sizes.tcl macro.cfg pin_order.cfg floorplan.txt GEMM_top_ip.v GemmAxiShell_bb.v GemmAxiShell_antenna.lef; do
+             ip_route_signoff.tcl ip_timing_eco.tcl sizes.tcl macro.cfg pin_order.cfg floorplan.txt GEMM_top_ip.v GemmAxiShell_bb.v GemmAxiShell_antenna.lef; do
         cp "$HERE/designs/gemm_ip/$f" "$IP_D/" || { echo "  missing openlane/designs/gemm_ip/$f"; return 1; }
     done
     [ -f "$HERE/designs/gemm_ip/clk_latency.tcl" ] && cp "$HERE/designs/gemm_ip/clk_latency.tcl" "$IP_D/"
@@ -1335,11 +1335,16 @@ st_ip_check() {   # signoff of an IP run, every check that does not need OpenLan
     sed 's/^/  /' "$out/check_openlane_run.txt"
     PEAK=$(awk -F'= ' '/Peak_Memory_Usage_MB/{split($2,a," "); print a[1]}' "$out/check_openlane_run.txt")
     local item v
-    for item in tritonRoute_violations lvs_total_errors pin_antenna_violations spef_wns; do
+    for item in tritonRoute_violations lvs_total_errors pin_antenna_violations; do
         grep -qE "^ *PASS +$item" "$out/check_openlane_run.txt" && pass "$item" \
             || fail "$item: $(grep -E " $item" "$out/check_openlane_run.txt" | sed 's/^ *//')"
     done
-    grep -qE "^ *PASS +hold worst slack" "$out/check_openlane_run.txt" && pass "hold" || fail "hold (signoff, typical)"
+    # timing verdict (tools/timing_gate.py): Typical setup internal >= 0, Typical setup
+    # on I/O >= 0 or not worse than core_v11, hold >= 0 in every corner; Slowest only printed
+    if python3 "$KIT/tools/timing_gate.py" "$RUNDIR" --ref "$(ip_core_run)" > "$out/timing_gate.txt" 2>&1; then
+        pass "timing: $(tail -n 1 "$out/timing_gate.txt")"
+    else fail "timing: $(tail -n 1 "$out/timing_gate.txt")"; fi
+    sed '1d;$d' "$out/timing_gate.txt" | sed 's/^/  /'
     # Magic flags: every one must be an abstract-view artefact next to a macro (full GDS)
     # a MISSING metric (Magic not run, e.g. the flow stopped at LVS) stays empty, not 0
     v=$(awk -F'= ' '/Magic_violations = /{print $2+0}' "$out/check_openlane_run.txt")

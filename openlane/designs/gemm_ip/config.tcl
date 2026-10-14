@@ -59,6 +59,15 @@ if { [file exists $::env(DESIGN_DIR)/clk_latency.tcl] } {
 }
 set ::env(BASE_SDC_FILE) $::env(DESIGN_DIR)/ip.sdc
 
+# ---- timing repair after each global route of the antenna ECO rounds
+# (ip_route_signoff.tcl, ip_timing_eco.tcl): the global-route antenna diodes
+# come after the last resizer step; ip_v2 had 22 of them on one o21ai_1 net,
+# Typical setup -2.00 ns. repair_timing only, repair_design stays off.
+set ::env(GEMM_IP_TIMING_ECO) 1
+set ::env(GEMM_IP_TIMING_ECO_MAX_BUFFER_PERCENT) 5
+set ::env(GEMM_IP_TIMING_ECO_HOLD_MARGIN) 0.05
+set ::env(GEMM_IP_TIMING_ECO_DESIGN) 0
+
 if { [file exists $::env(DESIGN_DIR)/overrides.tcl] } {
     puts "\[INFO\]: gemm_ip: applying overrides.tcl"
     source $::env(DESIGN_DIR)/overrides.tcl

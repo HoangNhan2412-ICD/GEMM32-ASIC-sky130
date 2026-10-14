@@ -48,6 +48,12 @@ set -uo pipefail
 
 KIT=$(cd "$(dirname "$0")/.." && pwd)
 OL=${OL:-$HOME/OpenLane}
+# RAM limit of every OpenLane container: OpenLane's Makefile turns DOCKER_MEMORY /
+# DOCKER_SWAP into docker run --memory / --memory-swap (tools/*.sh read the same
+# two). 11 GB of RAM, the rest goes to swap (40 GB RAM + swap in all), so the
+# desktop keeps ~4 GB and a run out of memory is killed instead of hanging the
+# machine. DOCKER_MEMORY= DOCKER_SWAP= (empty) runs without a limit.
+export DOCKER_MEMORY=${DOCKER_MEMORY-11g} DOCKER_SWAP=${DOCKER_SWAP-40g}
 REPO=${REPO:-$KIT/../GEMM_32x32_KV260-main}
 HERE=$KIT/openlane
 LOG=$HERE/LOG.md

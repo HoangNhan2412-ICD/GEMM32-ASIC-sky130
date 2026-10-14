@@ -1,7 +1,8 @@
 # ---------------------------------------------------------------------------
-# ip_timing_eco.tcl - setup (and hold) repair after a global route of gemm_ip,
+# ip_timing_eco.tcl - setup repair after a global route of gemm_ip,
 # with the antenna diodes of that global route already in the design.
-# Run by gemm_ip_timing_eco in ip_route_signoff.tcl (OpenROAD, run_openroad_script).
+# Run by gemm_ip_timing_eco in ip_route_signoff.tcl (OpenROAD, run_openroad_script),
+# which also restores the views from before this step if OpenROAD fails.
 #
 # Why: GRT_REPAIR_ANTENNAS puts its diodes in global_routing, after the last
 # resizer step, and nothing re-times the design afterwards. ip_v2: 22 diodes
@@ -10,32 +11,38 @@
 # one cell as o21ai_4 gives -0.21 ns.
 #
 # Steps as OpenLane's resizer_routing_timing.tcl (global route, parasitics from
-# it, repair_timing, detailed placement), plus:
-#   - repair_design only with GEMM_IP_TIMING_ECO_DESIGN 1 (default 0: the
-#     signoff of core_v11 / ip_v2 lists ~20000 max-slew pins, fixing all of
-#     them is a much larger change than the paths this step is for);
-#   - prints "gemm_timing_eco: changed N" (cells resized or added), which
-#     ip_route_signoff.tcl uses to decide whether to route globally again.
+# it, repair_timing, detailed placement, check_placement), except:
+#   - repair_timing only if the internal setup slack (paths that neither start
+#     at a data input port nor end at an output port) is negative;
+#   - -skip_pin_swap on every repair_timing (as the patched OpenLane scripts);
+#   - Typical library only (see the read below);
+#   - no hold repair: hold stays as fixed after CTS, timing_gate.py checks it
+#     on every corner (a test on the placed DB of ip_pre hung the machine,
+#     memory suspected, inside repair_timing -hold: 55329 endpoints, ~4800 buffers);
+#   - repair_design only with GEMM_IP_TIMING_ECO_DESIGN 1 (default 0);
+#   - "gemm_timing_eco: changed N" (cells resized, added or removed) tells
+#     ip_route_signoff.tcl whether to route globally again;
+#   - run time and peak memory of this OpenROAD process at the end of the log.
+# The repair re-routes the nets it changed incrementally in memory (GRT-0009),
+# the code that died with SIGSEGV in core layout v3 (gemm_core/config.tcl,
+# GLB_RESIZER_TIMING_OPTIMIZATIONS); those routes are not written, the caller
+# runs a fresh global route.
 # Settings (defaults in brackets):
 #   GEMM_IP_TIMING_ECO_SETUP_MARGIN  [GLB_RESIZER_SETUP_SLACK_MARGIN]
-#   GEMM_IP_TIMING_ECO_HOLD_MARGIN   [0.05]
 #   GEMM_IP_TIMING_ECO_MAX_BUFFER_PERCENT [5]
 #   GEMM_IP_TIMING_ECO_DESIGN        [0]
 # ---------------------------------------------------------------------------
+set eco_t0 [clock seconds]
 source $::env(SCRIPTS_DIR)/openroad/common/io.tcl
-set read_args [list]
-if { $::env(RSZ_MULTICORNER_LIB) } {
-    lappend read_args -lib_fastest $::env(RSZ_LIB_FASTEST)
-    lappend read_args -lib_slowest $::env(RSZ_LIB_SLOWEST)
-}
-lappend read_args -lib_typical $::env(RSZ_LIB)
-read {*}$read_args
+# Typical library only, even with RSZ_MULTICORNER_LIB: with all three corners
+# the worst slack and repair_timing follow the Slowest corner (ip_v2: -11 ns),
+# and the slow corner is not touched without a separate decision
+read -no_spefs -lib_typical $::env(RSZ_LIB)
 
 proc eco_env {name default} {
     return [expr {[info exists ::env($name)] ? $::env($name) : $default}]
 }
 set setup_margin [eco_env GEMM_IP_TIMING_ECO_SETUP_MARGIN $::env(GLB_RESIZER_SETUP_SLACK_MARGIN)]
-set hold_margin  [eco_env GEMM_IP_TIMING_ECO_HOLD_MARGIN 0.05]
 set max_buf      [eco_env GEMM_IP_TIMING_ECO_MAX_BUFFER_PERCENT 5]
 set do_design    [eco_env GEMM_IP_TIMING_ECO_DESIGN 0]
 
@@ -58,6 +65,23 @@ global_route {*}$arg_list
 source $::env(SCRIPTS_DIR)/openroad/common/set_rc.tcl
 estimate_parasitics -global_routing
 
+# worst setup slack (s) of the internal paths, "" if none is negative; the pins
+# of a path run from the endpoint back to the clock source (or the input port)
+proc eco_internal_setup {} {
+    set worst ""
+    set n 0
+    foreach pe [find_timing_paths -path_delay max -group_count 1000 -endpoint_count 1 -sort_by_slack -slack_max 0] {
+        set pins [[$pe path] pins]
+        set e [get_full_name [lindex $pins 0]]
+        set s [get_full_name [lindex $pins end]]
+        if { [string first "/" $e] < 0 } { continue }
+        if { [string first "/" $s] < 0 && $s ne $::env(CLOCK_PORT) } { continue }
+        incr n
+        set sl [$pe slack]
+        if { $worst eq "" || $sl < $worst } { set worst $sl }
+    }
+    return [list $worst $n]
+}
 proc eco_masters {} {
     set m [dict create]
     foreach inst [[ord::get_db_block] getInsts] {
@@ -66,20 +90,27 @@ proc eco_masters {} {
     return $m
 }
 proc eco_report {tag} {
-    puts "gemm_timing_eco: $tag: setup wns [format %.3f [sta::worst_slack_cmd max]]\
-          tns [format %.3f [sta::total_negative_slack_cmd max]], hold wns [format %.3f [sta::worst_slack_cmd min]]"
+    set i [eco_internal_setup]
+    set iw [expr {[lindex $i 0] eq "" ? "none negative" : "[format %.3f [expr {[lindex $i 0] * 1e9}]] ns on [lindex $i 1] endpoint(s)"}]
+    puts "gemm_timing_eco: $tag: internal setup $iw;\
+          all setup wns [format %.3f [expr {[sta::worst_slack_cmd max] * 1e9}]]\
+          tns [format %.3f [expr {[sta::total_negative_slack_cmd max] * 1e9}]],\
+          hold wns [format %.3f [expr {[sta::worst_slack_cmd min] * 1e9}]] (ns, Typical, global-route parasitics)"
+    return [lindex $i 0]
 }
 
 set before [eco_masters]
-eco_report "before"
-if { $do_design } {
-    repair_design
-    eco_report "after repair_design"
+set iw [eco_report "before"]
+if { $iw eq "" || $iw >= 0 } {
+    puts "gemm_timing_eco: internal setup not negative - repair skipped"
+} else {
+    if { $do_design } {
+        repair_design
+        eco_report "after repair_design"
+    }
+    repair_timing -setup -skip_pin_swap -setup_margin $setup_margin -max_buffer_percent $max_buf
+    eco_report "after repair_timing -setup"
 }
-repair_timing -setup -skip_pin_swap -setup_margin $setup_margin -max_buffer_percent $max_buf
-eco_report "after repair_timing -setup"
-repair_timing -hold -setup_margin $setup_margin -hold_margin $hold_margin -max_buffer_percent $max_buf
-eco_report "after repair_timing -hold"
 
 set after [eco_masters]
 set resized 0
@@ -105,3 +136,7 @@ if { [catch {check_placement -verbose} errmsg] } {
 }
 unset_dont_touch_wrapper
 write
+
+set hwm "?"
+catch { set hwm [lindex [exec grep VmHWM /proc/[pid]/status] 1] }
+puts "gemm_timing_eco: runtime [expr {[clock seconds] - $eco_t0}] s, peak memory [expr {$hwm eq "?" ? "?" : $hwm / 1024}] MB"

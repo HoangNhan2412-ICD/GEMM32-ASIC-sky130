@@ -3,11 +3,13 @@
 # (commit deaecf4) for gemm_ip, sourced by ip_full.tcl and ip_resume.tcl.
 # gemm_core keeps its own file unchanged. Differences from the original:
 #   - gemm_ip_timing_eco: after every global route of the antenna ECO rounds
-#     (its diodes are in by then), ip_timing_eco.tcl repairs setup/hold on the
+#     (its diodes are in by then), ip_timing_eco.tcl repairs setup (no hold) on the
 #     global-route parasitics; if it changed cells, global route again.
 #     GEMM_IP_TIMING_ECO 1 turns it on (default 0 = the original flow). Each
 #     round starts again from the pre-global-route database (as the diodes of
 #     ant_eco.py do), so the repair is redone per round and the kept round has its own.
+#   - signoff order: antenna and Magic DRC before LVS, LVS in a catch (a
+#     mismatch or a failed netgen is reported, the flow goes on).
 # ---------------------------------------------------------------------------
 # (original header) route_signoff.tcl - routing and every signoff step of gemm_core, after CTS.
 # Sourced by resume.tcl (core-route: a new run from the post-CTS views of an
@@ -244,23 +246,42 @@ proc gemm_macro_cross {round} {
     }
 }
 
-# setup/hold repair on the global route just made, diodes included (see
-# ip_timing_eco.tcl); returns 1 if cells changed (the guides are then stale)
-proc gemm_ip_timing_eco {round} {
+# setup repair on the global route just made, diodes included (see
+# ip_timing_eco.tcl); returns 1 if cells changed (the guides are then stale).
+# Like soft_step: if OpenROAD fails or crashes (the in-memory re-route of the
+# repaired nets died with SIGSEGV in core layout v3, see gemm_core/config.tcl),
+# the views go back to the ones from before this step, a warning is printed and
+# the flow goes on.
+proc gemm_ip_timing_eco {round pass} {
     if { ![info exists ::env(GEMM_IP_TIMING_ECO)] || !$::env(GEMM_IP_TIMING_ECO) } { return 0 }
+    set before [gemm_views]
     increment_index
-    TIMER::timer_start
-    set log [index_file $::env(routing_logs)/timing_eco_$round.log]
-    puts_info "gemm: timing ECO $round: repair_timing on the global route, diodes included (log: [relpath . $log])"
-    set ::env(GRT_CONGESTION_REPORT_FILE) $::env(routing_tmpfiles)/timing_eco_$round-congestion.rpt
-    run_openroad_script $::env(DESIGN_DIR)/ip_timing_eco.tcl -indexed_log $log \
-        -save "to=$::env(routing_tmpfiles),name=[index_file timing_eco_$round],noindex,def,odb,netlist,powered_netlist"
-    TIMER::timer_stop
-    exec echo "[TIMER::get_runtime]" | python3 $::env(SCRIPTS_DIR)/write_runtime.py "timing eco $round - openroad"
+    set t0 [clock seconds]
+    set log [index_file $::env(routing_logs)/timing_eco_${round}_$pass.log]
+    puts_info "gemm: timing ECO round $round pass $pass: repair_timing on the global route, diodes included (log: [relpath . $log])"
+    set ::env(GRT_CONGESTION_REPORT_FILE) $::env(routing_tmpfiles)/timing_eco_${round}_$pass-congestion.rpt
+    set ::env(EXIT_ON_ERROR) 0
+    set failed [catch {
+        run_openroad_script $::env(DESIGN_DIR)/ip_timing_eco.tcl -indexed_log $log \
+            -save "to=$::env(routing_tmpfiles),name=[index_file timing_eco_${round}_$pass],noindex,def,odb,netlist,powered_netlist"
+    } e]
+    set ::env(EXIT_ON_ERROR) 1
+    set secs [expr {[clock seconds] - $t0}]
     set n 0
-    catch { regexp {gemm_timing_eco: changed (\d+)} [exec grep "gemm_timing_eco: changed" $log] -> n }
+    if { !$failed && [catch { regexp {gemm_timing_eco: changed (\d+)} [exec grep "gemm_timing_eco: changed" $log] -> n }] } {
+        set failed 1
+        set e "no 'changed' line in the log"
+    }
+    if { $failed } {
+        gemm_set_views $before
+        puts_warn "gemm: timing ECO round $round pass $pass failed after $secs s ($e) - views from before it kept, continuing"
+        exec echo "round $round pass $pass: timing eco FAILED after $secs s, views restored" >> $::env(routing_reports)/ant_eco_rounds.txt
+        return 0
+    }
     catch { foreach line [split [exec grep "^gemm_timing_eco:" $log] "\n"] { puts_info "gemm: $line" } }
-    exec echo "round $round: timing eco changed $n" >> $::env(routing_reports)/ant_eco_rounds.txt
+    set mem "?"
+    catch { regexp {peak memory (\S+) MB} [exec grep "gemm_timing_eco: runtime" $log] -> mem }
+    exec echo "round $round pass $pass: timing eco changed $n, $secs s, peak $mem MB" >> $::env(routing_reports)/ant_eco_rounds.txt
     return [expr {$n > 0}]
 }
 
@@ -312,7 +333,12 @@ proc gemm_routing {} {
             }
         }
         global_routing
-        if { [gemm_ip_timing_eco $round] } { global_routing }
+        # timing ECO, then a fresh global route if it changed cells (that global
+        # route may add diodes again, so check once more, GEMM_IP_TIMING_ECO_PASSES)
+        set passes [expr {[info exists ::env(GEMM_IP_TIMING_ECO_PASSES)] ? $::env(GEMM_IP_TIMING_ECO_PASSES) : 2}]
+        for { set pass 1 } { $pass <= $passes && [gemm_ip_timing_eco $round $pass] } { incr pass } {
+            global_routing
+        }
         gemm_macro_cross $round
         if { $::env(RUN_FILL_INSERTION) } { ins_fill_cells }
         gemm_drt_seeds
@@ -408,12 +434,6 @@ if { [catch {
     if { $::env(RUN_MAGIC) } { run_magic }
     if { $::env(RUN_KLAYOUT) } { soft_step "KLayout GDS" { run_klayout } }
     if { $::env(RUN_KLAYOUT_XOR) } { soft_step "KLayout XOR" { run_klayout_gds_xor } }
-    # A layout with shorts never matches, and on a design this size netgen then
-    # spends many hours listing every cell as unmatched (core_v6: 7 h, 152 MB of
-    # log, killed). The verdict is FAIL either way, so LVS waits for a clean route.
-    if { $::env(RUN_LVS) && $::env(GEMM_DRT_LEFT) != 0 } {
-        puts_warn "gemm: skipping LVS - detailed routing left $::env(GEMM_DRT_LEFT) violation(s)"
-    } elseif { $::env(RUN_LVS) } { run_magic_spice_export; run_lvs }
     # antenna before Magic DRC, the longest and largest step here (core_v6r:
     # 43 min with abstract cells, about 13 GB): if Magic dies, the rest of the
     # signoff is already there and Magic_violations stays -1, which
@@ -423,6 +443,23 @@ if { [catch {
         set ::env(EXIT_ON_ERROR) 0
         if { [catch { gemm_magic_drc } e] } {
             puts_err "gemm: Magic DRC did not finish ($e) - signoff incomplete"
+        }
+        set ::env(EXIT_ON_ERROR) 1
+    }
+    # gemm_ip: LVS last, after antenna and Magic DRC. ip_v2's layout did not
+    # match (floating wells west of the AXI macro) and netgen was still at it
+    # after 3.4 h; with LVS last, one run has every other number even then.
+    # A mismatch (QUIT_ON_LVS_ERROR 0) or a failed / stopped netgen is reported
+    # (lvs_total_errors, FAIL in check_openlane_run.py), the flow goes on.
+    # A layout with shorts never matches, and on a design this size netgen then
+    # spends many hours listing every cell as unmatched (core_v6: 7 h, 152 MB of
+    # log, killed). The verdict is FAIL either way, so LVS waits for a clean route.
+    if { $::env(RUN_LVS) && $::env(GEMM_DRT_LEFT) != 0 } {
+        puts_warn "gemm: skipping LVS - detailed routing left $::env(GEMM_DRT_LEFT) violation(s)"
+    } elseif { $::env(RUN_LVS) } {
+        set ::env(EXIT_ON_ERROR) 0
+        if { [catch { run_magic_spice_export; run_lvs } e] } {
+            puts_err "gemm: LVS FAIL or did not finish ($e) - continuing"
         }
         set ::env(EXIT_ON_ERROR) 1
     }

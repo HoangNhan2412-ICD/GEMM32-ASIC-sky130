@@ -25,6 +25,10 @@
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 IMG=${OL_IMAGE:-ghcr.io/the-openroad-project/openlane:ff5509f65b17bfa4068d5336495ab1718987ff69-amd64}
+# RAM limit as openlane/run_flow.sh (DOCKER_MEMORY / DOCKER_SWAP, empty = none)
+MEM=()
+[ -n "${DOCKER_MEMORY-11g}" ] && MEM+=(--memory="${DOCKER_MEMORY-11g}")
+[ -n "${DOCKER_SWAP-40g}" ] && MEM+=(--memory-swap="${DOCKER_SWAP-40g}")
 PDK_ROOT=${PDK_ROOT:-$HOME/.ciel}
 
 [ $# -ge 1 ] || { sed -n '3,24p' "$0"; exit 2; }
@@ -51,7 +55,7 @@ OUT=$RUN/reports/signoff/magic_macro_check.rpt
 rm -rf "$WORK"; mkdir -p "$WORK"
 
 docker_ol() {
-    docker run --rm -v "$HOME:$HOME" -v "$PDK_ROOT:$PDK_ROOT" -e PDK_ROOT="$PDK_ROOT" -e PDK=sky130A \
+    docker run --rm "${MEM[@]}" -v "$HOME:$HOME" -v "$PDK_ROOT:$PDK_ROOT" -e PDK_ROOT="$PDK_ROOT" -e PDK=sky130A \
         -e MAGTYPE=mag -e GEMM_WORK="$WORK" -e GEMM_GDS="$GDS" -e GEMM_TOP="$DESIGN" \
         --user "$(id -u):$(id -g)" "$IMG" "$@"
 }

@@ -17,6 +17,10 @@ KIT=$(cd "$(dirname "$0")/.." && pwd)
 OL=${OL:-$HOME/OpenLane}
 REPO=${REPO:-$KIT/../GEMM_32x32_KV260-main}
 IMG=${OL_IMAGE:-ghcr.io/the-openroad-project/openlane:ff5509f65b17bfa4068d5336495ab1718987ff69-amd64}
+# RAM limit as openlane/run_flow.sh (DOCKER_MEMORY / DOCKER_SWAP, empty = none)
+MEM=()
+[ -n "${DOCKER_MEMORY-11g}" ] && MEM+=(--memory="${DOCKER_MEMORY-11g}")
+[ -n "${DOCKER_SWAP-40g}" ] && MEM+=(--memory-swap="${DOCKER_SWAP-40g}")
 PDK_ROOT=${PDK_ROOT:-$HOME/.ciel}
 RUN=""; C0=""; C1=""
 while [ $# -gt 0 ]; do
@@ -33,7 +37,7 @@ OUT=$RUN/reports/power; mkdir -p "$OUT"
 sta_power() {   # sta_power <name> [activity file]
     local env=(-e SHELL_FINAL="$RUN/results/final" -e OUT="$OUT/$1" -e PDK_ROOT="$PDK_ROOT")
     [ -n "${2:-}" ] && env+=(-e ACT="$2")
-    docker run --rm -u "$(id -u):$(id -g)" -v "$HOME:$HOME" -v "$PDK_ROOT:$PDK_ROOT" -v "$KIT:$KIT" -v "$OL:$OL" \
+    docker run --rm "${MEM[@]}" -u "$(id -u):$(id -g)" -v "$HOME:$HOME" -v "$PDK_ROOT:$PDK_ROOT" -v "$KIT:$KIT" -v "$OL:$OL" \
         "${env[@]}" "$IMG" sta -no_splash -exit "$KIT/tools/power/shell_power.tcl" 2>&1 | tee "$OUT/$1.log"
     grep -E "^Total" "$OUT/$1.design.rpt" || { echo "no Total line in $OUT/$1.design.rpt"; exit 1; }
 }

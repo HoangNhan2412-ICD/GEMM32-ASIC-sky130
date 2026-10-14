@@ -40,6 +40,9 @@
 #   ROW         core-gls: row model, rtl or gl (gate netlist of the row run) [gl]
 #   CORE_RUN    axi-shell / axi-gls: core run to compare with / simulate [last core run that passed]
 #   IP_TAG      ip: run name [ip_v1]; ip-route / ip-check / ip-gls / ip-status: run to use [last ip run]
+#   IP_CLOCK_PERIOD ip / ip-route: CLOCK_PERIOD of gemm_ip in ns [OpenLane default 10]; ip-route
+#               rebuilds the post-CTS SDC at it (ip_post_cts.sdc). The timing gate checks
+#               GEMM_GATE_PERIOD [10] - set both.
 #   IP_SHELL_TAG ip-shell: run name of the AXI macro [ip_shell]
 #   IP_CORE_TAG ip-shell / ip-pre: core run whose floorplan the IP reuses [core_v11]
 #   AUTO_COMMIT=1  git commit + tag the kit on every PASS
@@ -1111,7 +1114,7 @@ ip_install() {   # everything gemm_ip needs in $OL (floorplan files must already
     # same annotated SRAM LEF as core_install writes for gemm_core
     python3 "$HERE/designs/gemm_core/macro_antenna_lef.py" --in "$sram/lef/sky130_sram_2kbyte_1rw1r_32x512_8.lef" \
         --lib-lef "$lib" --out "$IP_D/sram_antenna.lef" > /dev/null || return 1
-    for f in config.tcl ip.sdc cfg_shift_mcp.sdc clk_latency_seed.tcl ip_pre.tcl ip_full.tcl ip_resume.tcl \
+    for f in config.tcl ip.sdc ip_post_cts.sdc ip_hold_fix.tcl cfg_shift_mcp.sdc clk_latency_seed.tcl ip_pre.tcl ip_full.tcl ip_resume.tcl \
              ip_route_signoff.tcl ip_timing_eco.tcl sizes.tcl macro.cfg pin_order.cfg floorplan.txt GEMM_top_ip.v GemmAxiShell_bb.v GemmAxiShell_antenna.lef; do
         cp "$HERE/designs/gemm_ip/$f" "$IP_D/" || { echo "  missing openlane/designs/gemm_ip/$f"; return 1; }
     done
@@ -1200,6 +1203,7 @@ st_ip() {
     rm -f "$HERE/designs/gemm_ip/overrides.tcl" "$IP_D/overrides.tcl"
     local ovr="# written by run_flow.sh ip $STAMP"
     ovr+=$'\n'"set ::env(GEMM_DRT_SEEDS) \"${DRT_SEEDS:-42 7 23}\""
+    [ -n "${IP_CLOCK_PERIOD:-}" ] && ovr+=$'\n'"set ::env(CLOCK_PERIOD) $IP_CLOCK_PERIOD"
     route_overrides
     printf '%s\n' "$ovr" > "$HERE/designs/gemm_ip/overrides.tcl"
     sed 's/^/  overrides: /' "$HERE/designs/gemm_ip/overrides.tcl"
@@ -1262,6 +1266,7 @@ st_ip_route() {   # routing + signoff from the post-CTS layout of an IP run (as 
     local seeds=${DRT_SEEDS:-"${DRT_SEED:-7} 23 101"}
     ovr+=$'\n'"set ::env(GEMM_DRT_SEEDS) \"$seeds\""
     ovr+=$'\n'"set ::env(DRT_OR_SEED) ${seeds%% *}"
+    [ -n "${IP_CLOCK_PERIOD:-}" ] && ovr+=$'\n'"set ::env(CLOCK_PERIOD) $IP_CLOCK_PERIOD"
     route_overrides
     # antenna ECO round 0 from the violators of an earlier route of the same netlist
     if [ "${ANT_ECO:-3}" != 0 ]; then

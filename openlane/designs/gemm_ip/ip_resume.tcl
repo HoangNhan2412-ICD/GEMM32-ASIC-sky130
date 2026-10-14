@@ -5,7 +5,12 @@
 #   - routing + signoff from ip_route_signoff.tcl (the gemm_ip copy of
 #     gemm_core/route_signoff.tcl, with the timing ECO; resume.tcl sources
 #     route_signoff.tcl from its own directory);
-#   - the probe mode runs ../gemm_core/grt_probe.tcl.
+#   - the probe mode runs ../gemm_core/grt_probe.tcl;
+#   - route mode: if CLOCK_PERIOD differs from the period of the saved post-CTS
+#     SDC, the SDC is rebuilt by ip_post_cts.sdc (ip.sdc + propagated clock;
+#     at the CTS period it writes the same SDC line for line, checked on ip_v3);
+#   - route mode: hold repair before the global route (ip_hold_fix.tcl,
+#     GEMM_IP_HOLD_FIX), in a catch that keeps the post-CTS views on failure.
 # gemm_core/resume.tcl stays untouched so core-route keeps running exactly as
 # for core_v11. Started by run_flow.sh ip-route.
 # ---------------------------------------------------------------------------
@@ -183,6 +188,15 @@ if { $GEMM_MODE eq "route" } {
         set NEW($k) [expr {[info exists OLD($k)] ? $OLD($k) : 0}]
     }
 }
+# a clock period other than the one the post-CTS SDC was written at: rebuild it
+if { $GEMM_MODE eq "route" } {
+    set fh [open $NEW(CURRENT_SDC)]; set sdc_txt [read $fh]; close $fh
+    if { [regexp {create_clock[^\n]*-period\s+([0-9.]+)} $sdc_txt -> sdc_T]
+         && abs($sdc_T - $::env(CLOCK_PERIOD)) > 1e-6 } {
+        puts_info "resume: post-CTS SDC at $sdc_T ns, CLOCK_PERIOD $::env(CLOCK_PERIOD) ns - SDC rebuilt by ip_post_cts.sdc"
+        set NEW(CURRENT_SDC) $here/ip_post_cts.sdc
+    }
+}
 set_odb $NEW(CURRENT_ODB)
 if { $GEMM_MODE ne "check" } {
     set_def $NEW(CURRENT_DEF)
@@ -215,5 +229,46 @@ if { $GEMM_MODE eq "probe" } {
     exit 0
 }
 
-# ---- 5b. route: routing + signoff, shared with core_full.tcl
+# ---- 5b. route: hold repair on the post-CTS layout (ip_hold_fix.tcl). If
+# OpenROAD fails or crashes, the post-CTS views stay, a warning is printed and
+# the flow goes on. Run time and peak memory: log and reports/cts/hold_fix.txt.
+proc gemm_ip_hold_fix {here} {
+    set before [list $::env(CURRENT_ODB) $::env(CURRENT_DEF) $::env(CURRENT_NETLIST) $::env(CURRENT_POWERED_NETLIST)]
+    increment_index
+    set t0 [clock seconds]
+    set log [index_file $::env(cts_logs)/hold_fix.log]
+    set rpt $::env(cts_reports)/hold_fix.txt
+    puts_info "gemm: hold repair before the global route (margin [expr {[info exists ::env(GEMM_IP_HOLD_MARGIN)] ? $::env(GEMM_IP_HOLD_MARGIN) : 0.1}] ns, log: [relpath . $log])"
+    set ::env(EXIT_ON_ERROR) 0
+    set failed [catch {
+        run_openroad_script $here/ip_hold_fix.tcl -indexed_log $log \
+            -save "to=$::env(cts_tmpfiles),name=[index_file hold_fix],noindex,def,odb,netlist,powered_netlist"
+    } e]
+    set ::env(EXIT_ON_ERROR) 1
+    set secs [expr {[clock seconds] - $t0}]
+    set n 0
+    if { !$failed && [catch { regexp {gemm_hold_fix: changed (\d+)} [exec grep "gemm_hold_fix: changed" $log] -> n }] } {
+        set failed 1
+        set e "no 'changed' line in the log"
+    }
+    if { $failed } {
+        set_odb [lindex $before 0]
+        set_def [lindex $before 1]
+        set_netlist [lindex $before 2]
+        set ::env(CURRENT_POWERED_NETLIST) [lindex $before 3]
+        puts_warn "gemm: hold repair failed after $secs s ($e) - post-CTS views kept, continuing"
+        exec echo "hold fix FAILED after $secs s, post-CTS views kept" >> $rpt
+        return
+    }
+    catch { foreach line [split [exec grep "^gemm_hold_fix:" $log] "\n"] { puts_info "gemm: $line" } }
+    set mem "?"
+    catch { regexp {peak memory (\S+) MB} [exec grep "gemm_hold_fix: runtime" $log] -> mem }
+    exec echo "hold fix changed $n, $secs s, peak $mem MB" >> $rpt
+    save_state "after the hold repair"
+}
+if { [info exists ::env(GEMM_IP_HOLD_FIX)] && $::env(GEMM_IP_HOLD_FIX) } {
+    gemm_ip_hold_fix $here
+}
+
+# ---- 5c. route: routing + signoff, shared with core_full.tcl
 source $here/ip_route_signoff.tcl

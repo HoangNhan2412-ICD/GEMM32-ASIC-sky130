@@ -73,6 +73,15 @@ set ::env(GEMM_IP_TIMING_ECO_PASSES) 1
 set ::env(GEMM_IP_TIMING_ECO_MAX_BUFFER_PERCENT) 5
 set ::env(GEMM_IP_TIMING_ECO_DESIGN) 0
 
+# ---- hold repair before the global route of ip-route (ip_resume.tcl,
+# ip_hold_fix.tcl): Typical with the macro libs, placement parasitics; ip_v3
+# post-CTS at 20 ns had one endpoint under +0.1 ns (_56750_/Q ->
+# u_axi_shell/i_weight_ready, -0.315 ns). repair_timing -hold -skip_pin_swap,
+# margin 0.1 ns, at most 1 % buffers.
+set ::env(GEMM_IP_HOLD_FIX) 1
+set ::env(GEMM_IP_HOLD_MARGIN) 0.1
+set ::env(GEMM_IP_HOLD_MAX_BUFFER_PERCENT) 1
+
 # ---- signoff STA with the macro libs (EXTRA_LIBS: SRAM, rows, AXI macro).
 # OpenLane's default (0) reads only the standard-cell libs at signoff and makes
 # every macro a black box: ip_v2 signed off 8 violating endpoints at -2.00 ns,

@@ -27,7 +27,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 IMG=${OL_IMAGE:-ghcr.io/the-openroad-project/openlane:ff5509f65b17bfa4068d5336495ab1718987ff69-amd64}
 # RAM limit as openlane/run_flow.sh (DOCKER_MEMORY / DOCKER_SWAP, empty = none)
 MEM=()
-[ -n "${DOCKER_MEMORY-11g}" ] && MEM+=(--memory="${DOCKER_MEMORY-11g}")
+[ -n "${DOCKER_MEMORY-10g}" ] && MEM+=(--memory="${DOCKER_MEMORY-10g}")
 [ -n "${DOCKER_SWAP-40g}" ] && MEM+=(--memory-swap="${DOCKER_SWAP-40g}")
 PDK_ROOT=${PDK_ROOT:-$HOME/.ciel}
 

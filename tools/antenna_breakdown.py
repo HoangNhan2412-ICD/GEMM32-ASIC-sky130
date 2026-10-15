@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""antenna_breakdown.py <OpenLane run dir> [--name core_v11] [--out-dir openlane/logs]
+"""antenna_breakdown.py <OpenLane run dir> [--name core_v11] [--out-dir openlane/logs] [--tsv pins.tsv]
 
 Where the antenna violations of a run are, by RTL module. Reads only the run:
   - the signoff violator list (reports/signoff/<last>-antenna_violators.rpt:
@@ -397,6 +397,7 @@ def main():
     ap.add_argument("--out-dir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                                                       "openlane", "logs"))
     ap.add_argument("--depth", type=int, default=2, help="hierarchy levels kept in a module name")
+    ap.add_argument("--tsv", help="also write one line per violating pin to this file")
     ap.add_argument("--max-hops", type=int, default=3)
     ap.add_argument("--max-fanout", type=int, default=32)
     a = ap.parse_args()
@@ -456,6 +457,15 @@ def main():
                     else ("no position", None)
                 v["module"], v["how"] = (mod or f"? ({lab})"), f"region: {lab}"
         v["region"] = region_of(v["xy"][0], v["xy"][1], macros, groups, box, a.depth)[0] if v["xy"] else "-"
+
+    if a.tsv:
+        with open(a.tsv, "w") as f:
+            f.write("pin\tnet\tlayer\tratio\trequired\tpartial\twire_um\ttouch\tregion\tmodule\tx\ty\n")
+            for v in viols:
+                xy = v["xy"] or ("", "")
+                f.write(f"{v['inst']}/{v['pin']}\t{v['net']}\t{v['layer']}\t{v['partial'] / v['required']:.3f}\t"
+                        f"{v['required']:.1f}\t{v['partial']:.1f}\t{v['length']:.0f}\t{v['touch']}\t"
+                        f"{v['region']}\t{v['module']}\t{xy[0]}\t{xy[1]}\n")
 
     # ---------------- report
     by = collections.defaultdict(list)

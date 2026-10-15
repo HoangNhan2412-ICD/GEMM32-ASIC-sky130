@@ -8,7 +8,8 @@
 #   - the probe mode runs ../gemm_core/grt_probe.tcl;
 #   - route mode: if CLOCK_PERIOD differs from the period of the saved post-CTS
 #     SDC, the SDC is rebuilt by ip_post_cts.sdc (ip.sdc + propagated clock;
-#     at the CTS period it writes the same SDC line for line, checked on ip_v3);
+#     at the CTS period it writes the same SDC line for line, checked on ip_v3),
+#     then written out self-contained by ip_write_sdc.tcl (write_sdc);
 #   - route mode: hold repair before the global route (ip_hold_fix.tcl,
 #     GEMM_IP_HOLD_FIX), in a catch that keeps the post-CTS views on failure.
 # gemm_core/resume.tcl stays untouched so core-route keeps running exactly as
@@ -195,6 +196,7 @@ if { $GEMM_MODE eq "route" } {
          && abs($sdc_T - $::env(CLOCK_PERIOD)) > 1e-6 } {
         puts_info "resume: post-CTS SDC at $sdc_T ns, CLOCK_PERIOD $::env(CLOCK_PERIOD) ns - SDC rebuilt by ip_post_cts.sdc"
         set NEW(CURRENT_SDC) $here/ip_post_cts.sdc
+        set sdc_rebuilt 1
     }
 }
 set_odb $NEW(CURRENT_ODB)
@@ -203,6 +205,13 @@ if { $GEMM_MODE ne "check" } {
     set_netlist $NEW(CURRENT_NETLIST)
     set_sdc $NEW(CURRENT_SDC)
     set ::env(CURRENT_POWERED_NETLIST) $NEW(CURRENT_POWERED_NETLIST)
+}
+# the rebuilt SDC sources ip.sdc through ::env(DESIGN_DIR): write it out as one
+# self-contained file, the one that ends in results/final/sdc
+if { [info exists sdc_rebuilt] } {
+    run_openroad_script $here/ip_write_sdc.tcl -indexed_log $::env(cts_logs)/write_sdc.log \
+        -save "to=$::env(cts_tmpfiles),name=post_cts_$::env(CLOCK_PERIOD)ns,noindex,sdc"
+    puts_info "resume: SDC written as [relpath . $::env(CURRENT_SDC)]"
 }
 save_state "Resumed from $GEMM_FROM_TAG after CTS"
 puts_info "resume: ODB [relpath . $::env(CURRENT_ODB)], step index $::env(CURRENT_INDEX)"

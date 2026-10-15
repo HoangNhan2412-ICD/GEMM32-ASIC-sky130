@@ -82,6 +82,11 @@ set ::env(GEMM_IP_HOLD_FIX) 1
 set ::env(GEMM_IP_HOLD_MARGIN) 0.1
 set ::env(GEMM_IP_HOLD_MAX_BUFFER_PERCENT) 1
 
+# ---- detailed router: the seed (DRT_SEEDS / GEMM_DRT_SEEDS) only reorders
+# nets x GEMM_DRT_OR_K reroutes (ip_droute.tcl); with 0 every seed routes the
+# same (ip_v3r: 42, 7 and 23 byte-identical).
+set ::env(GEMM_DRT_OR_K) 0.05
+
 # ---- signoff STA with the macro libs (EXTRA_LIBS: SRAM, rows, AXI macro).
 # OpenLane's default (0) reads only the standard-cell libs at signoff and makes
 # every macro a black box: ip_v2 signed off 8 violating endpoints at -2.00 ns,

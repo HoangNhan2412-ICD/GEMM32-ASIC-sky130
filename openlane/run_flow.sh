@@ -1114,7 +1114,7 @@ ip_install() {   # everything gemm_ip needs in $OL (floorplan files must already
     # same annotated SRAM LEF as core_install writes for gemm_core
     python3 "$HERE/designs/gemm_core/macro_antenna_lef.py" --in "$sram/lef/sky130_sram_2kbyte_1rw1r_32x512_8.lef" \
         --lib-lef "$lib" --out "$IP_D/sram_antenna.lef" > /dev/null || return 1
-    for f in config.tcl ip.sdc ip_post_cts.sdc ip_hold_fix.tcl ip_write_sdc.tcl cfg_shift_mcp.sdc clk_latency_seed.tcl ip_pre.tcl ip_full.tcl ip_resume.tcl \
+    for f in config.tcl ip.sdc ip_post_cts.sdc ip_hold_fix.tcl ip_write_sdc.tcl ip_droute.tcl cfg_shift_mcp.sdc clk_latency_seed.tcl ip_pre.tcl ip_full.tcl ip_resume.tcl \
              ip_route_signoff.tcl ip_timing_eco.tcl sizes.tcl macro.cfg pin_order.cfg floorplan.txt GEMM_top_ip.v GemmAxiShell_bb.v GemmAxiShell_antenna.lef; do
         cp "$HERE/designs/gemm_ip/$f" "$IP_D/" || { echo "  missing openlane/designs/gemm_ip/$f"; return 1; }
     done

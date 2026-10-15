@@ -11,6 +11,9 @@
 #     ant_eco.py do), so the repair is redone per round and the kept round has its own.
 #   - signoff order: antenna and Magic DRC before LVS, LVS in a catch (a
 #     mismatch or a failed netgen is reported, the flow goes on).
+#   - detailed routing through ip_droute.tcl (gemm_detailed_routing), which
+#     passes -or_k GEMM_DRT_OR_K [0.05] with the seed: with OpenLane's
+#     droute.tcl (or_k 0) every seed of GEMM_DRT_SEEDS routed the same.
 # ---------------------------------------------------------------------------
 # (original header) route_signoff.tcl - routing and every signoff step of gemm_core, after CTS.
 # Sourced by resume.tcl (core-route: a new run from the post-CTS views of an
@@ -45,6 +48,36 @@ proc gemm_drt_count {} {
     return $n
 }
 
+set gemm_ip_dir [file dirname [file normalize [info script]]]
+
+# OpenLane's detailed_routing_tritonroute (scripts/tcl_commands/routing.tcl),
+# with ip_droute.tcl in place of droute.tcl (seed + or_k, both in the log)
+proc gemm_detailed_routing {} {
+    increment_index
+    TIMER::timer_start
+    set log [index_file $::env(routing_logs)/detailed.log]
+    puts_info "Running Detailed Routing, seed $::env(DRT_OR_SEED), or_k\
+               [expr {[info exists ::env(GEMM_DRT_OR_K)] ? $::env(GEMM_DRT_OR_K) : 0.05}] (log: [relpath . $log])..."
+
+    set ::env(_tmp_drt_file_prefix) $::env(routing_tmpfiles)/drt
+    set ::env(_tmp_drt_rpt_prefix) $::env(routing_reports)/drt
+    run_openroad_script $::gemm_ip_dir/ip_droute.tcl\
+        -indexed_log $log\
+        -save "to=$::env(routing_results),noindex,def,odb,netlist,powered_netlist"
+
+    try_exec python3 $::env(SCRIPTS_DIR)/drc_rosetta.py tr to_klayout \
+        -o $::env(routing_reports)/drt.klayout.xml \
+        --design-name $::env(DESIGN_NAME) \
+        $::env(routing_reports)/drt.drc
+
+    if { $::env(QUIT_ON_TR_DRC) } {
+        quit_on_tr_drc
+    }
+
+    TIMER::timer_stop
+    exec echo "[TIMER::get_runtime]" | python3 $::env(SCRIPTS_DIR)/write_runtime.py "detailed_routing - openroad"
+}
+
 # Detailed routing from the current global route. The router is deterministic
 # for a given seed, so a run that leaves a violation it cannot clear (core_v6:
 # one met5 short after 64 iterations) would leave it again: it is repeated from
@@ -75,7 +108,7 @@ proc gemm_drt_seeds {} {
             set cur ""
             puts_info "gemm: detailed routing with seed $seed (seeds to try: $seeds)"
             set ::env(EXIT_ON_ERROR) 0
-            set crashed [catch { detailed_routing } e]
+            set crashed [catch { gemm_detailed_routing } e]
             set ::env(EXIT_ON_ERROR) 1
             set log $::env(routing_logs)/$::env(CURRENT_INDEX)-detailed.log
             if { $crashed } {
@@ -85,7 +118,7 @@ proc gemm_drt_seeds {} {
             }
             set n [gemm_drt_count]
             puts_info "gemm: detailed routing with seed $seed left $n violation(s)"
-            exec echo "seed $seed: $n violation(s)" >> $::env(routing_reports)/drt_seeds.txt
+            exec echo "seed $seed (or_k [expr {[info exists ::env(GEMM_DRT_OR_K)] ? $::env(GEMM_DRT_OR_K) : 0.05}]): $n violation(s)" >> $::env(routing_reports)/drt_seeds.txt
             set files [list $::env(CURRENT_ODB) $::env(CURRENT_DEF) $::env(CURRENT_NETLIST) \
                            $::env(CURRENT_POWERED_NETLIST) $::env(routing_reports)/drt.drc $log]
             # a clean attempt ends the loop and stays current: only dirty ones are kept aside

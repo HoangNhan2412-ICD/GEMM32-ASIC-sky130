@@ -119,9 +119,13 @@ Timing nhiều corner (setup ở ss/100°C/1,60V, hold ở ff/-40°C/1,95V, RC m
     python3 tools/sta_corners.py ~/OpenLane/designs/gemm_core/runs/core_v11
 
 core_v11: setup -7,61 ns (RC max) và -6,35 ns (RC min) ở corner chậm, tức khoảng 57 MHz; hold sạch với cả RC min
-và RC max.
+và RC max. Lưu ý: STA này và con số 100 MHz ở tt chưa kiểm các path đi qua macro (SRAM, row). Kiểm đủ với lib của mọi macro
+thì fmax ở tt chỉ khoảng 53 MHz. IP gemm_ip vì vậy được signoff ở 50 MHz, và đó là con số "TT theo lib": SRAM chỉ có
+lib TT, timing của SRAM là ngoại suy (lib chỉ đặc tính hoá slew 1,25–40 ps), SRAM OpenRAM đo trên silicon khoảng 34–40 MHz,
+hold của path I/O chỉ báo, và điện dung RCX lớn hơn ước lượng sau global route khoảng 2 lần. Số liệu signoff của IP:
+docs/TIEN_DO_SIGNOFF.md.
 
-Công suất ở tt/25°C/1,80V, 100 MHz:
+Công suất của core ở tt/25°C/1,80V, 100 MHz (IP gemm_ip ở 50 MHz: 1,38 W activity mặc định, xem docs/TIEN_DO_SIGNOFF.md):
 
     tools/power.sh ~/OpenLane/designs/gemm_core/runs/core_v11                  # activity mặc định của OpenSTA
     tools/power.sh ~/OpenLane/designs/gemm_core/runs/core_v11 --vcd 2300 3200  # activity từ mô phỏng

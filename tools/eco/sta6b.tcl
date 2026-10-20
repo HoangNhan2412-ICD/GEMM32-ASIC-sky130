@@ -97,4 +97,15 @@ if { [info exists ::env(DRV)] && $::env(DRV) } {
           SRAM dout cap nets [dict size $D(sram_dout_cap)]; SRAM addr/wmask slew nets [dict size $D(sram_addr_slew)] (waived);\
           SRAM other [dict size $D(sram_other)]; row/AXI pins [dict size $D(macro_other)]; I/O [dict size $D(io)]"
 }
+# EXTRA=1 (final check): unconstrained endpoints and clock skew, to files
+if { [info exists ::env(EXTRA)] && $::env(EXTRA) } {
+    sta::redirect_file_begin $P/sta6b/${DES}_${C}_$RC.unconstrained.rpt
+    check_setup -verbose -unconstrained_endpoints
+    sta::redirect_file_end
+    sta::redirect_file_begin $P/sta6b/${DES}_${C}_$RC.skew.rpt
+    report_clock_skew -setup
+    report_clock_skew -hold
+    sta::redirect_file_end
+    puts "STA6B EXTRA $DES $C RC $RC: unconstrained report lines [exec wc -l < $P/sta6b/${DES}_${C}_$RC.unconstrained.rpt]"
+}
 puts "STA6B time [expr {[clock seconds]-$t0}] s, peak [expr {[lindex [exec grep VmHWM /proc/[pid]/status] 1]/1024}] MB"

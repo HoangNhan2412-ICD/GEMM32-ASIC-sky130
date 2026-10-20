@@ -144,8 +144,25 @@ if DRY:
 
 # 3. ECO
 n0 = len(block.getInsts())
+if os.environ.get('GRTDBG'): tcl('set_debug_level GRT repair_antennas ' + os.environ['GRTDBG'])
+# repair_antennas names new diodes ANTENNA_<i> from the first free index on and never
+# skips a taken name, so after diodes were removed (clock nets, step 7B) dbInst::create
+# returns null on a clash and setDiodeLoc segfaults. The old diodes get a temporary
+# name meanwhile; the new ones are then numbered after the largest old index.
+old_dio = {}
+for i in block.getInsts():
+    m_ = re.match(r'^ANTENNA_(\d+)$', i.getName())
+    if m_: old_dio[int(m_.group(1))] = i
+for k_, i in old_dio.items(): assert i.rename(f'OLDANT_TMP_{k_}')
 r = tcl(f'if {{[catch {{repair_antennas sky130_fd_sc_hd__diode_2 -iterations 1 -ratio_margin {MARGIN:g} -allow_congestion}} e]}} '
         f'{{ puts "PROBE repair_antennas FAILED: $e"; exit 3 }}')
+nxt = max(old_dio) + 1 if old_dio else 1
+new_dio = sorted((int(re.match(r'^ANTENNA_(\d+)$', i.getName()).group(1)), i) for i in block.getInsts() if re.match(r'^ANTENNA_\d+$', i.getName()))
+for k_, i in new_dio:
+    while block.findInst(f'ANTENNA_{nxt}') is not None: nxt += 1
+    assert i.rename(f'ANTENNA_{nxt}'); nxt += 1
+for k_, i in old_dio.items(): assert i.rename(f'ANTENNA_{k_}')
+say(f'diode names: {len(old_dio)} old kept, {len(new_dio)} new numbered after {max(old_dio) if old_dio else 0}')
 say(f'repair_antennas: +{len(block.getInsts()) - n0} instances')
 tcl(f'detailed_route -output_drc {OUT}.drt.drc -droute_end_iter 64 -or_seed 42 -verbose 1')
 say('detailed_route done')

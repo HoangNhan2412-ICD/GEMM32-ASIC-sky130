@@ -7,6 +7,7 @@
 #            full = arc + Magic GDS + Magic DRC (full std-cell views) + SPICE export + LVS
 #            lvs  = arc + SPICE export (from LEF) + LVS
 #            final = rcx + full (RCX/STA, Magic GDS + DRC, SPICE + LVS) in one run
+#            S5_KLAYOUT=1 adds KLayout GDS + XOR after LVS (full / final)
 #            rcx  = arc + run_parasitics_sta (RCX min/max/nom, multi-corner STA) with the final SDC
 package require openlane
 prep -design gemm_ip -tag $::env(S5_TAG) -run_path $::env(ECO_DIR)/s5 -overwrite
@@ -72,5 +73,14 @@ if { $::env(S5_MODE) eq "full" || $::env(S5_MODE) eq "final" } {
     }
     set ::env(EXIT_ON_ERROR) 1
     save_final_views
+    # KLayout stream-out + XOR against the Magic GDS (off in the gemm configs as slow
+    # on this die, back on for signoff); last, so a slow or failed XOR loses nothing
+    if { [info exists ::env(S5_KLAYOUT)] && $::env(S5_KLAYOUT) } {
+        set ::env(RUN_KLAYOUT_XOR) 1
+        set ::env(EXIT_ON_ERROR) 0
+        if { [catch { run_klayout } e] } { puts_err "probe: KLayout GDS did not finish ($e)" }
+        if { [catch { run_klayout_gds_xor } e] } { puts_err "probe: KLayout XOR did not finish ($e)" }
+        set ::env(EXIT_ON_ERROR) 1
+    }
 }
 puts_info "probe: step 5 ($::env(S5_MODE)) done"

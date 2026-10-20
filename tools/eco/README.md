@@ -53,7 +53,12 @@ Chuẩn bị `ECO_DIR` từ run OpenLane gốc:
 | Đổi cỡ, buffer | `s6a_resize.py` (đổi cỡ cell nhận), `s6a_buffer.py` (buffer phía sink, kèm đo slack trước và sau) |
 | ECO DRV và hold | `drv_plan.tcl` (lập kế hoạch ở SS RC max: thử đổi cỡ bằng `replace_cell`), `drv_pick.py` (chọn cỡ buffer theo bảng lib SS), `s6c_eco.py` (áp: đổi cỡ, buffer ở driver hoặc chân dout, buffer phía sink cho hold) |
 | Kiểm trong OL1 | `s5_ol.tcl` (chế độ `arc`, `rcx`, `full`, `lvs`, `final`), `spot_check.sh` (Magic drc(full) trên cửa sổ cố định của GDS, view đầy đủ của macro) |
-| STA và DRV | `sta6b.tcl` (setup/hold theo loại path, DRV theo giới hạn lib), `sta6b_one.sh`, `sta6b.sh`, `sta_table.py` |
+| STA và DRV | `sta6b.tcl` (setup/hold theo loại path, DRV theo giới hạn lib; `EXTRA=1` thêm endpoint không ràng buộc và `report_clock_skew`), `sta6b_one.sh`, `sta6b.sh`, `sta_table.py`, `net_ratio_ol1.tcl` (tỉ số slew/giới hạn và tải/giới hạn của từng net, bằng OpenROAD của OL1) |
+| Net dài và DRV bằng `repair_design` | `layer_rc.tcl` (`set_layer_rc` cho lớp và via, giá trị lấy từ tech LEF), `s7_long_try.py` (thử trong bộ nhớ: mọi net khác `dont_touch`, cell hold bị khoá, `repair_design` với margin; xuất topology `INST`/`NET`), `bufdist.py` (khoảng cách từ buffer mới tới dây của net gốc) |
+| Clock | `clk_scope.tcl` (dump chân clock: slew, giới hạn, arrival), `clk_scope.py` (chân vượt mục tiêu: chân clock SRAM và `S_AXI_ACLK` 0,75 ns TT / 1,0 ns SS; chân khác theo giới hạn lib), `clk_compare.py` (độ trễ clock và độ dời latency giữa hai layout), `clk_plan.py` (đồ thị dây từ DEF, Elmore hiệu chỉnh theo STA, đặt clkbuf ở điểm rẽ; chế độ `graph` kiểm mọi chân nằm trên đồ thị) |
+| Áp topology | `s7_apply.py` (phát lại `INST`/`NET`/`DEL`, đổi cỡ, đặt cell, `IncrementalGRoute`, DRT tăng dần, lấp filler, nối nguồn) |
+| Kiểm sau mỗi lượt | `netdiff.py` (cell thêm, đổi cỡ, xoá; không cell nào bị dời; mỗi buffer mới nối đúng driver cũ và tập sink cũ), `check_layout.sh` (ARC, RCX, STA 9 corner, dump clock), `runjob.sh` (chạy một job, dừng khi log có lỗi hoặc ổ dưới 10 GB) |
+| GDS | `gds_cells.py` (top cell, cell rỗng, macro có hình thật), `xor_tiled.drc` (XOR theo ô, bỏ qua các lớp đã chạy), `xor_tiled_control.drc` (đối chứng: XOR hai lớp khác nhau phải khác 0), `spot_classify.py` (tách lỗi ở mép cắt khỏi lỗi bên trong cửa sổ) |
 
 ## Thứ tự chạy
 
@@ -95,7 +100,25 @@ Ví dụ dưới đây giả định đã `export ECO_DIR PDK_ROOT OL`, và `T` 
 
 5. ECO hold: một dòng `SINKBUF` trong plan, ví dụ `dlygate4sd3_1+buf_4` trước chân SRAM. Sau đó chạy lại vòng antenna (`s6c_ant.sh`) cho các net mới.
 
-6. Kiểm cuối: `ol.sh` với `S5_MODE=final` (ARC, RCX, STA, Magic GDS và DRC, SPICE, LVS), rồi `magic_macro_check.sh` và `spot_check.sh` cho các chỗ cần xem bằng view đầy đủ của macro.
+6. Net dài và DRV còn lại (giai đoạn 7): thử trong bộ nhớ, rồi phát lại topology lên DEF:
+
+       $T/nor.sh try $T/s7_long_try.py $ECO_DIR/s7/A1try.log IN=<DEF> LIST=<bảng net: net, loại, chân driver, cell driver> OUT=s7/A1try \
+           MARGIN=<%> SLEW_MARGIN=<%> CAP_MARGIN=<%> "DONT_USE=<DONT_USE_CELLS>"
+       $T/runjob.sh s7a $ECO_DIR/s7A/l1.log $T/nor.sh s7a $T/s7_apply.py $ECO_DIR/s7A/l1.log \
+           IN=<DEF> GUIDE=<guide của DEF> OUT=s7A/l1 TOPO=$ECO_DIR/s7/A1try.topo.tsv OLDCHG=$ECO_DIR/s7/A1try.oldchg.tsv
+       python3 $T/netdiff.py <DEF vào> <DEF ra> <lib std TT>,$ECO_DIR/lib/ProcessingElementRow.lib,$ECO_DIR/lib/GemmAxiShell.lib,<lib SRAM> <tiền tố ra>
+       OUTD=s7A $T/check_layout.sh l1 <DEF ra>
+
+   Margin lấy theo tỉ số điện dung RCX/GRT đo trên chính các net này (khoảng 1,5–2,7 lần, nên margin khoảng 66 %).
+
+7. Clock: `clk_plan.py calib` để khớp hệ số (KC, A) với slew STA trên SPEF của OL1, rồi `clk_plan.py plan` ra topology cho `s7_apply.py`. Chạy `clk_plan.py graph` trước để chắc mọi chân đều nằm trên đồ thị dây.
+
+8. Kiểm cuối: `ol.sh` với `S5_MODE=final` (ARC, RCX, STA, Magic GDS và DRC, SPICE, LVS; thêm `S5_KLAYOUT=1` để có GDS của KLayout và XOR), rồi `magic_macro_check.sh` và `spot_check.sh` cho các chỗ cần xem bằng view đầy đủ của macro. Lỗi trong cửa sổ spot check thì tách bằng `spot_classify.py`; lỗi latch-up (LU.2, LU.3) bên trong một cửa sổ nhỏ thì kiểm lại bằng cửa sổ nới rộng, vì tap thật có thể nằm ngoài vùng cắt.
+
+   XOR phẳng của OL1 hết RAM 10 GB trên die này (lớp 33/42, 65 triệu polygon). Chạy các lớp còn lại theo ô:
+
+       klayout -b -r $T/xor_tiled.drc -rd a=<Magic GDS> -rd b=<KLayout GDS> -rd tile=800 -rd border=1 \
+           -rd "done=<lớp đã chạy>" -rd ignore=81/14 -rd rpt_out=<báo cáo>
 
 ## Những điều cần biết về OpenROAD dcf3613
 
@@ -105,3 +128,8 @@ Ví dụ dưới đây giả định đã `export ECO_DIR PDK_ROOT OL`, và `T` 
 - ODB do bản này ghi ra sau khi tạo net bằng Python có thể không đọc lại được. Các script trao đổi bằng DEF và dựng lại guide cho mỗi lượt.
 - Trên layout đã lấp kín filler, phải gỡ filler quanh chỗ cần chèn cell (`CORE_SPACER`, cửa sổ ±15 µm) trước khi chèn, và lấp lại sau DRT bằng đúng danh sách cell của OL1.
 - Trên layout gốc, DRT mới tự sửa 3 chỗ Metal Spacing mà DRT của OL1 không báo. Ba chỗ này đã được kiểm bằng Magic.
+- **Bắt buộc gọi `set_layer_rc`** (`source layer_rc.tcl`) trước `repair_design`. Nếu thiếu, R của dây trên route GRT bằng 0 (`r_wire=0`), nên `repair_design` gần như không chèn buffer (chỉ 3 buffer cho 85 net dài). Điện dung thì không đổi khi có hay không có `set_layer_rc`.
+- `estimate_parasitics -global_routing` crash trên route nạp từ guide, kể cả khi có `set_layer_rc` (con trỏ lớp rỗng trong `layerRC`). Nguồn parasitics `detailed_routing` của bản này chưa có. Cách đi được: trong bộ nhớ, xoá dây của các net cần sửa, rồi `global_route -allow_congestion` mới.
+- **Lỗi đặt tên diode của `repair_antennas`**: diode mới được đặt tên `ANTENNA_<i>` bắt đầu từ chỉ số trống đầu tiên, rồi tăng dần mà không bỏ qua tên đã có. Sau khi đã gỡ diode ở giữa dãy (ví dụ trên net clock), `dbInst::create` gặp tên trùng và trả về null, rồi `setDiodeLoc` segfault. Cách lách trong `s4c_round.py`: tạm đổi tên mọi diode cũ thành `OLDANT_TMP_<k>`, chạy `repair_antennas`, đánh số lại diode mới bắt đầu sau chỉ số lớn nhất của diode cũ, rồi trả lại tên cũ.
+- `repair_design` đổi cỡ cả cell hold (dlygate thành buf_4). Trong `s7_long_try.py`, cell hold bị khoá (`dont_touch`). Nếu driver của net là cell hold hay row macro thì chèn buf_4 ngay ở chân ra trước khi sửa.
+- Đường clock chỉ dùng họ clkbuf. Đồ thị dây trong `clk_plan.py` coi hình chân là vật dẫn: router có thể đặt hai via lên cùng một chân li1 (diode, chân CLK) và dùng chính chân đó làm dây nối giữa hai via. Điện dung chân của macro (`GemmAxiShell`, `ProcessingElementRow`) đọc từ lib: chân `S_AXI_ACLK` là 0,31 pF.

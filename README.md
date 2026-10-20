@@ -9,14 +9,32 @@ PE, row (32 PE), array, rồi core GemmAccelerator gồm 32 row macro và 80 SRA
 | Mục | Kết quả |
 |---|---|
 | Die | 7,06 x 10,24 mm (72,3 mm²) |
-| Tần số | 100 MHz ở tt/25°C/1,80V; khoảng 57 MHz ở ss/100°C/1,60V |
+| Tần số | 100 MHz ở tt/25°C/1,80V theo STA của core_v11, nhưng con số này chưa kiểm các path đi qua macro; kiểm đủ thì chỉ khoảng 53 MHz ở tt. Khoảng 57 MHz ở ss/100°C/1,60V (path cell). IP signoff ở 50 MHz, xem phần dưới |
 | DRC | router 0; Magic 0 lỗi thật (48 cờ do view abstract của macro, đã kiểm lại trên layout đầy đủ) |
 | LVS | khớp |
 | Setup / hold | path nội bộ ở tt: setup +1,21 ns, hold +0,27 ns; hold sạch ở ff với cả RC min và RC max |
 | Antenna | còn 219 pin trên 205 net, vượt nhẹ (trung vị 1,4 lần giới hạn), không chân SRAM nào |
 | Mô phỏng gate-level | netlist core cùng netlist gate-level của 32 row: PASS cả 3 kích thước ma trận (64x64x64, 8x32x544, 16x992x32), trùng từng chu kỳ với RTL FPGA |
 | Công suất | tt/25°C/1,80V, 100 MHz: 1,53 W với activity từ VCD (mô phỏng gate-level cả core lẫn row, pha tính của ma trận 64x64x64); 2,89 W với activity mặc định của OpenSTA |
-| Hiệu suất | đỉnh 204,8 GOPS (2 x 32 x 32 x 100 MHz); 134 GOPS/W (theo 1,53 W); 2,83 GOPS/mm² |
+| Hiệu suất | đỉnh 204,8 GOPS nếu chạy 100 MHz (2 x 32 x 32 x 100 MHz); 134 GOPS/W (theo 1,53 W); 2,83 GOPS/mm². Ở 50 MHz của IP: 102,4 GOPS |
+
+## IP gemm_ip (core + vỏ AXI), signoff ở 50 MHz
+
+IP đã signoff ở **50 MHz (chu kỳ 20 ns), TT theo lib**, trên layout ECO cuối. Chi tiết ở `docs/TIEN_DO_SIGNOFF.md`.
+
+| Mục | Kết quả |
+|---|---|
+| Antenna, DRC, LVS | ARC 0; DRT 0; Magic 0; LVS khớp; KLayout XOR 0 |
+| Setup / hold nội bộ | tt: setup +1,43 ns, hold +0,32 ns; hold ff +0,13 ns; hold ss +0,23 ns |
+| DRV | 0 net cell chuẩn vượt giới hạn lib ở tt và ss |
+| Mô phỏng gate-level | PASS cả 3 kích thước, trùng từng chu kỳ với RTL cùng cấu hình |
+| Công suất | 1,38 W ở 50 MHz, tt, activity mặc định của OpenSTA |
+| Mô hình timing | `GEMM_top.tt.lib` cho người tích hợp (phần I/O) |
+
+Giới hạn:
+- 50 MHz là con số **TT theo lib**. SRAM OpenRAM chỉ có lib TT, và timing của SRAM là ngoại suy, vì lib chỉ đặc tính hoá slew 1,25–40 ps.
+- SRAM OpenRAM đo trên silicon chạy được khoảng 34–40 MHz.
+- Setup ss của path chạm macro và hold của path I/O chỉ được báo kèm.
 
 ## Chạy
 
@@ -64,7 +82,7 @@ GDS nằm ở ~/OpenLane/designs/gemm_core/runs/<tag>/results/final/gds/.
 - Resizer của bản OpenROAD này có thể đổi chân của cell không giao hoán (and2b) khi sửa timing, và LVS không bắt được
   vì layout khớp với netlist đã sai. Flow chặn bằng -skip_pin_swap và so netlist row với RTL (sim/row_equiv.sh) ở tầng row.
 - Antenna chưa về 0: router của bản OpenROAD này không tính antenna khi đi dây và không có chế độ ECO.
-- Corner chậm chỉ đạt khoảng 57 MHz; muốn 100 MHz ở mọi corner phải chia lại pipeline.
+- Con số 100 MHz của core_v11 chưa kiểm các path đi qua macro (SRAM, row); kiểm đủ thì chỉ khoảng 53 MHz ở tt. Corner chậm chỉ khoảng 57 MHz cho path cell. IP signoff ở 50 MHz (tt theo lib).
 - Timing ở cổng I/O được miễn vì core chưa có vòng pad (196 path, tệ nhất -0,81 ns ở tt); đây là core, chưa phải chip hoàn chỉnh.
 - Công suất SRAM là cận trên: thư viện OpenRAM cho cùng năng lượng mỗi cạnh clock dù SRAM có được chọn hay không.
 

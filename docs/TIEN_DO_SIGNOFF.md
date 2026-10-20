@@ -72,7 +72,7 @@ Endpoint không ràng buộc (1124, giống nhau ở mọi corner và giống h�
 
 Hold I/O âm vì SDC coi clock bên ngoài là lý tưởng (độ trễ clock tới cổng bằng 0), trong khi bên trong IP độ trễ clock vào khoảng 6–7 ns. **Người tích hợp dùng `GEMM_top.tt.lib`** để tính phần I/O với clock thật của hệ thống.
 
-Công suất ở 50 MHz (TT, SPEF RC nom) theo hoạt động từ GLS: 800,3 mW theo VCD (64x64x64, cửa sổ 400 chu kỳ lúc đang tính; 8x32x544: 744,9; 16x992x32: 772,7 mW). Ở 64x64x64: 15,9 GOPS hiệu dụng, 19,9 GOPS/W, 100 pJ/MAC; đỉnh 102,4 GOPS chia công suất đo là 128 GOPS/W (cận trên). Chi tiết và giới hạn: docs/paper/SUMMARY.md.
+Công suất ở 50 MHz (TT, SPEF RC nom) theo hoạt động từ GLS: 745,1 mW theo VCD cả job (64x64x64; 8x32x544: 751,0; 16x992x32: 753,5 mW; SRAM tính theo lib, là cận trên; nếu lấy SRAM cận dưới thì khoảng 623–626 mW). Ở 64x64x64: 15,9 GOPS hiệu dụng, 21,4 GOPS/W, 93,5 pJ/MAC (25,5 GOPS/W nếu lấy SRAM cận dưới); đỉnh 102,4 GOPS chia công suất đo là 137 GOPS/W (cận trên). Chi tiết và giới hạn: docs/paper/SUMMARY.md.
 
 Số tham khảo, vectorless (activity mặc định của OpenSTA): 1377,6 mW (1,38 W). Phân theo nhóm:
 

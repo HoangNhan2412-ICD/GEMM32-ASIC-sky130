@@ -2,7 +2,7 @@ block,metric,value,source
 PE,die_area_um2,17217.5,gemm_pe/runs/paper_pe reports/metrics.csv DIEAREA_mm^2
 PE,core_area_um2,13085.0,metrics.csv CoreArea_um^2
 PE,synth_cell_area_um2,6603.8,reports/synthesis/*.stat.rpt Chip area
-PE,flops (synthesis),66,metrics.csv DFF
+PE,flops,82,"final netlist: 66 dfxtp (metrics.csv DFF counts only these) + 16 dfrtp (r_weight_shift, r_weight_value)"
 PE,fmax_reg2reg_TT_MHz,208.9,"fmax_ProcessingElement_tt.rpt (SPEF nom, propagated clock)"
 PE,fmax_reg2reg_SS_MHz,108.7,fmax_ProcessingElement_ss.rpt
 PE,power_random_50MHz_mW,0.6662,"power/block_pe.design.rpt (TT, SPEF nom, 1000 random cycles)"

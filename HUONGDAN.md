@@ -125,7 +125,7 @@ lib TT, timing của SRAM là ngoại suy (lib chỉ đặc tính hoá slew 1,25
 hold của path I/O chỉ báo, và điện dung RCX lớn hơn ước lượng sau global route khoảng 2 lần. Số liệu signoff của IP:
 docs/TIEN_DO_SIGNOFF.md.
 
-Công suất của core ở tt/25°C/1,80V, giả định 100 MHz, không đạt khi kiểm đủ path qua macro (IP gemm_ip ở 50 MHz: 800,3 mW theo VCD (64x64x64, cửa sổ 400 chu kỳ lúc đang tính; 8x32x544: 744,9; 16x992x32: 772,7 mW); 1377,6 mW vectorless chỉ để tham khảo; xem docs/TIEN_DO_SIGNOFF.md):
+Công suất của core ở tt/25°C/1,80V, giả định 100 MHz, không đạt khi kiểm đủ path qua macro (IP gemm_ip ở 50 MHz: 745,1 mW theo VCD cả job (64x64x64; 8x32x544: 751,0; 16x992x32: 753,5 mW; SRAM tính theo lib, là cận trên; nếu lấy SRAM cận dưới thì khoảng 623–626 mW); 1377,6 mW vectorless chỉ để tham khảo; xem docs/TIEN_DO_SIGNOFF.md):
 
     tools/power.sh ~/OpenLane/designs/gemm_core/runs/core_v11                  # activity mặc định của OpenSTA
     tools/power.sh ~/OpenLane/designs/gemm_core/runs/core_v11 --vcd 2300 3200  # activity từ mô phỏng
@@ -134,7 +134,7 @@ core_v11: 2,89 W với activity mặc định; 1,53 W với activity từ VCD (m
 row gate-level, chu kỳ 2300-3200 là pha tính của job thứ hai). Trong 1,53 W: SRAM 0,45 W (80 macro), row 0,78 W,
 phần còn lại của core 0,30 W. Thư viện OpenRAM cho cùng năng lượng mỗi cạnh clock dù SRAM có được chọn hay không, nên phần
 SRAM là cận trên. Mô phỏng không có trễ cổng nên không tính glitch. Với giả định 100 MHz, không đạt khi kiểm đủ path qua macro: đỉnh 204,8 GOPS
-(2 x 32 x 32 x 100 MHz), tức 134 GOPS/W và 2,83 GOPS/mm². IP gemm_ip ở 50 MHz (công suất VCD, tt, SPEF RC nom): 64x64x64 15,9 GOPS hiệu dụng, 19,9 GOPS/W, 100 pJ/MAC; đỉnh 102,4 GOPS chia 800,3 mW là 128 GOPS/W (cận trên). Chi tiết: docs/paper/SUMMARY.md. Bản --vcd mất khoảng 15 phút (core_v11: 13m27s, cửa sổ 900 chu kỳ), cần khoảng 8 GB RAM (mô phỏng đỉnh 7,0 GB) và 0,7 GB ổ.
+(2 x 32 x 32 x 100 MHz), tức 134 GOPS/W và 2,83 GOPS/mm². IP gemm_ip ở 50 MHz (công suất VCD, tt, SPEF RC nom): 64x64x64 15,9 GOPS hiệu dụng, 21,4 GOPS/W, 93,5 pJ/MAC; đỉnh 102,4 GOPS chia 745,1 mW là 137 GOPS/W (cận trên). Chi tiết: docs/paper/SUMMARY.md. Bản --vcd mất khoảng 15 phút (core_v11: 13m27s, cửa sổ 900 chu kỳ), cần khoảng 8 GB RAM (mô phỏng đỉnh 7,0 GB) và 0,7 GB ổ.
 
 Mô phỏng gate-level: `core-gls` in PASS và số sự kiện trùng chu kỳ cho từng kích thước. core_v11 với row
 gate-level: PASS cả 3 kích thước (64x64x64, 8x32x544, 16x992x32), trùng chu kỳ 258, 274 và 34 sự kiện với RTL

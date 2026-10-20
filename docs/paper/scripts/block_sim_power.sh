@@ -28,7 +28,7 @@ echo "BLOCKPOWER $B sim $(( $(date +%s) - t0 )) s: $(grep -hE 'BLOCK_RAND' sim.l
 grep -q "PASS" sim.log || { echo "BLOCKPOWER $B: simulation mismatch"; exit 1; }
 python3 $K/tools/power/vcd2act_flat.py win.vcd dut_gl.v dut $OUT.act | sed "s/^/BLOCKPOWER $B /"
 rm -f win.vcd sim.vvp
-docker run --rm --name blockpower --memory=10g --memory-swap=40g -u 1000:1000 -v "$HOME:$HOME" \
+docker run --rm --name blockpower --memory=10g --memory-swap=40g -u 1000:1000 -v ~:~ \
   -e FINAL=$RUN/results/final -e DESIGN=$D -e PDK_ROOT=${PDK_ROOT} -e OUT=$OUT -e ACT=$OUT.act -e PERIOD=$PERIOD \
   $IMG sta -no_splash -exit $P/paper/scripts/block_power.tcl > $OUT.log 2>&1
 grep -E "activity from|clock period|^Total|^Error" $OUT.log | sed "s/^/BLOCKPOWER $B /"

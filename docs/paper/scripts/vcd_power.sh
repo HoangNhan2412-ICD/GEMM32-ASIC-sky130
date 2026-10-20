@@ -1,4 +1,6 @@
 #!/bin/bash
+# SUPERSEDED: keeps only the last name of each VCD id, so nets on the row / AXI boundary get no
+# activity (see data/superseded_alias_bug/README.txt); use vcd2act_phases.py / job_power.sh.
 # Activity-based power of the final IP for one matrix shape: gate-level sim of the final
 # netlist with a VCD window [C0, C1) taken while the array computes, VCD -> activity per
 # driver pin, OpenSTA report_power at TT with the signoff SPEF (RC nom) and the final SDC
@@ -21,7 +23,7 @@ grep -q VCD_END "$W/gls.log" || { echo "VCDPOWER $tag: no VCD_END"; exit 1; }
 python3 $P/paper/scripts/vcd2act_ip.py "$W/win.vcd" $IPF/verilog/gl/GEMM_top.nl.v $ROW/verilog/gl/ProcessingElementRow.nl.v \
   $SH/results/final/verilog/gl/GemmAxiShell.nl.v "$OUT/vcd_$tag.act" | sed "s/^/VCDPOWER $tag /"
 rm -f "$W/win.vcd" "$W/gls.vvp" "$W"/*_gl.v
-docker run --rm --name vcdpower --memory=10g --memory-swap=40g -u 1000:1000 -v "$HOME:$HOME" \
+docker run --rm --name vcdpower --memory=10g --memory-swap=40g -u 1000:1000 -v ~:~ \
   -e CORE_FINAL=$IPF -e ROW_FINAL=$ROW -e SHELL_FINAL=$SH/results/final -e DESIGN=GEMM_top -e PDK_ROOT=${PDK_ROOT} \
   -e OUT=$OUT/vcd_$tag -e ACT=$OUT/vcd_$tag.act $IMG sta -no_splash -exit $K/tools/power/power.tcl > $OUT/vcd_$tag.log 2>&1
 grep -E "activity from|^Total|^Error" $OUT/vcd_$tag.log | sed "s/^/VCDPOWER $tag /"

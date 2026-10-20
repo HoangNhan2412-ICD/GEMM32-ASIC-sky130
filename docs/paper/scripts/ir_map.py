@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """IR-drop maps and summary from the per-instance voltages written by OpenROAD PSM
 (analyze_power_grid -outfile, OpenLane 1.0.2 image), one CSV per net.
-usage: ir_map.py <paper dir> <vccd1.csv> <vssd1.csv>"""
+usage: ir_map.py <paper dir> <vccd1.csv> <vssd1.csv> [tag]   (tag is appended to the output names)"""
 import sys, csv, statistics as st
 import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
-P, fv, fg = sys.argv[1:4]
+P, fv, fg = sys.argv[1:4]; TAG = ('_' + sys.argv[4]) if len(sys.argv) > 4 else ''
 def load(f):
     rows = []
     for t in csv.reader(open(f)):
@@ -24,12 +24,12 @@ for ax, (net, f, vdd) in zip(axs, (('vccd1', fv, 1.8), ('vssd1', fg, 0.0))):
     ax.set_aspect('equal'); ax.set_title(f'{net}: worst {d[-1]*1e3:.0f} mV, mean {st.mean(d)*1e3:.2f} mV', fontsize=9)
     ax.set_xlabel('x (um)'); ax.set_ylabel('y (um)'); fig.colorbar(sc, ax=ax, label='IR drop (mV)', shrink=.7)
     top = sorted(zip(drop, r), key=lambda z: -z[0])[:100]
-    with open(f'{P}/data/irdrop_{net}_worst100.csv', 'w', newline='') as o:
+    with open(f'{P}/data/irdrop{TAG}_{net}_worst100.csv', 'w', newline='') as o:
         w = csv.writer(o); w.writerow(['instance', 'x_um', 'y_um', 'voltage_V', 'drop_mV'])
         for dd, (i, x, y, v) in top: w.writerow([i, x, y, v, round(dd * 1e3, 3)])
-fig.suptitle('Static IR drop, TT, 50 MHz, VCD activity of the 64x64x64 compute window (OpenROAD PSM)', fontsize=9)
+fig.suptitle(f'Static IR drop, TT, 50 MHz, VCD activity of the compute phase of the 64x64x64 job (OpenROAD PSM){TAG}', fontsize=9)
 fig.tight_layout()
-for ext in ('png', 'pdf'): fig.savefig(f'{P}/figures/irdrop_map.{ext}', dpi=200)
-with open(f'{P}/data/irdrop_summary.csv', 'w', newline='') as o:
+for ext in ('png', 'pdf'): fig.savefig(f'{P}/figures/irdrop_map{TAG}.{ext}', dpi=200)
+with open(f'{P}/data/irdrop{TAG}_summary.csv', 'w', newline='') as o:
     w = csv.DictWriter(o, fieldnames=list(summ[0])); w.writeheader(); w.writerows(summ)
 for s in summ: print('IRMAP', s)

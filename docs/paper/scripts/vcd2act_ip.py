@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""vcd2act_ip.py <vcd> <GEMM_top.nl.v> <row.nl.v> <shell.nl.v> <out.txt>
+"""vcd2act_ip.py
+SUPERSEDED: keeps only the last name of each VCD id, so nets on the row / AXI boundary get no
+activity (see data/superseded_alias_bug/README.txt); use vcd2act_phases.py / job_power.sh.
+ <vcd> <GEMM_top.nl.v> <row.nl.v> <shell.nl.v> <out.txt>
 IP version of tools/power/vcd2act.py: scopes are the IP top (flat core), the 32 rows and
 the AXI shell (u_axi_shell, flat gate netlist; ICG GCLK pins are drivers too).
 Per-net toggle count and time-at-1 from a net-level VCD (depth 1), mapped to the

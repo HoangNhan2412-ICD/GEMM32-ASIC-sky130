@@ -12,3 +12,4 @@ ECO image,ghcr.io/librelane/librelane@sha256:4bc9042ba177f73f275b5b39e7d372a07d3
 PDK,sky130A from open_pdks 0fe599b2afb6708d281543108caf8310912f54af
 simulator,Icarus Verilog 13.0 (host)
 repository,GEMM32-ASIC-sky130 branch eco-signoff-wip; package built on commit ef4609f (the commit that adds docs/paper follows it)
+Yosys 0.62,"in the ECO image (LibreLane), also eqy and sby; used for pe_equiv2.ys"

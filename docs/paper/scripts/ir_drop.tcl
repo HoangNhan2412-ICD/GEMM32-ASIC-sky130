@@ -1,10 +1,11 @@
 # Static IR drop of the final IP (OpenROAD PSM of OpenLane 1.0.2, 41a51eaf), TT, 50 MHz.
-# Power per instance: top-level standard cells from the VCD activity of the 64x64x64
-# compute window (paper/data/power/vcd_64x64x64_2400_2800.act), SRAM from the OpenRAM lib,
-# rows and AXI shell as constant power equal to their VCD average (paper/work/irlib/*.irmodel.lib).
-# Voltage sources: the vccd1 / vssd1 pins of the IP (met4). Run with -gui (offscreen) to
-# save the heatmap images.
-# env: ODB, SDC, SPEF, ACT, OUT (prefix), IRLIB (dir of the model libs)
+# Power per instance: top-level standard cells from a VCD activity file (ACT; the paper run
+# uses the compute phase of the 64x64x64 job, job_power.sh), SRAM from the OpenRAM lib,
+# rows and AXI shell as constant power equal to their VCD average (IRLIB/*.irmodel.lib).
+# Voltage sources: without VSRC, PSM's default checkerboard of bumps (140 um pitch) over the
+# core; with VSRC=<prefix>, the files <prefix>.<net>.vsrc (x,y,size,voltage per line, um).
+# Run with -gui (offscreen) to also save the heatmap images.
+# env: ODB, SDC, SPEF, ACT, OUT (prefix), IRLIB (dir of the model libs), VSRC (optional)
 set lib $::env(PDK_ROOT)/sky130A/libs.ref
 read_db $::env(ODB)
 read_liberty $lib/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
@@ -30,10 +31,14 @@ puts "IRDROP activity: $np top-level driver pins set, $nmiss not in the top leve
 report_power
 foreach {net v} {vccd1 1.8 vssd1 0.0} {
     set_pdnsim_net_voltage -net $net -voltage $v
-    analyze_power_grid -net $net -outfile $::env(OUT).$net.ir.csv
+    if {[info exists ::env(VSRC)]} {
+        analyze_power_grid -net $net -vsrc $::env(VSRC).$net.vsrc -outfile $::env(OUT).$net.ir.csv
+    } else {
+        analyze_power_grid -net $net -outfile $::env(OUT).$net.ir.csv
+    }
     puts "IRDROP done $net"
     # the IR Drop heatmap shows the last analysed net; one image per net, layer met1
-    if {[gui::enabled] && [catch {
+    if {[info commands gui::enabled] ne "" && [gui::enabled] && [catch {
         gui::set_display_controls "*" visible false
         gui::set_display_controls "Heat Maps/IR Drop" visible true
         gui::set_heatmap IRDrop Layer met1

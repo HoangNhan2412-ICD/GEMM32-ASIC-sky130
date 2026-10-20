@@ -72,7 +72,7 @@ Endpoint không ràng buộc (1124, giống nhau ở mọi corner và giống h�
 
 Hold I/O âm vì SDC coi clock bên ngoài là lý tưởng (độ trễ clock tới cổng bằng 0), trong khi bên trong IP độ trễ clock vào khoảng 6–7 ns. **Người tích hợp dùng `GEMM_top.tt.lib`** để tính phần I/O với clock thật của hệ thống.
 
-Công suất ở 50 MHz (TT, vectorless): 1377,6 mW. Phân theo nhóm:
+Công suất ở 50 MHz (TT, vectorless, activity mặc định của OpenSTA): 1377,6 mW (1,38 W). Đỉnh 102,4 GOPS (2 x 32 x 32 x 50 MHz); GOPS/W sẽ điền khi có công suất theo VCD. Phân theo nhóm:
 
 | Nhóm | Công suất (mW) |
 |---|---|
@@ -123,4 +123,5 @@ Layout cuối là `s7E/a5.def` trong thư mục ECO. Các file giao nằm ở `$
 - **Miễn trừ slew ở chân addr/wmask của SRAM:** lib của SRAM chỉ được đặc tính tới slew 40 ps. Mọi chân addr/wmask đều vượt mức này, kể cả chân chỉ nối dây dài 13 µm, nên đây là giới hạn của lib chứ không phải lỗi thiết kế.
 - **Hold I/O chỉ báo:** hold của path I/O âm ở SS vì SDC coi clock ngoài là lý tưởng; người tích hợp tính lại bằng `GEMM_top.tt.lib`.
 - **Tỉ số RCX/GRT:** điện dung trích bằng RCX lớn hơn ước lượng sau global route khoảng 1,5–2,7 lần (trung vị 2,05) trên các net dài, nên mọi ước lượng trước khi route cần margin lớn.
-- **Con số 100 MHz cũ của `core_v11`** chưa kiểm các path đi qua macro; khi kiểm đủ, fmax ở TT chỉ khoảng 53 MHz.
+- **Con số 100 MHz cũ của `core_v11`** chưa kiểm các path đi qua macro; khi kiểm đủ, fmax ở TT chỉ khoảng 53 MHz. Con số khoảng 57 MHz ở corner chậm của core_v11 cũng chưa kiểm path qua macro. Các con số 204,8 GOPS, 134 GOPS/W và 1,53 W của core_v11 là giả định 100 MHz.
+- **Antenna:** core_v11 chạy riêng còn 219 chân; IP gemm_ip về 0 nhờ ECO tăng dần (`tools/eco`).

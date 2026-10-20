@@ -97,10 +97,10 @@ Tổng hợp (miễn timing ở cổng I/O vì đây là core, chưa có vòng p
 
     python3 openlane/check_openlane_run.py --waive-io-timing ~/OpenLane/designs/gemm_core/runs/core_v11
 
-core_v11 cho: router 0 lỗi, LVS 0 lỗi, setup nội bộ +1,21 ns, hold nội bộ +0,27 ns, 219 pin / 205 net antenna,
+core_v11 cho (chu kỳ 10 ns, STA chưa gồm path qua macro): router 0 lỗi, LVS 0 lỗi, setup nội bộ +1,21 ns, hold nội bộ +0,27 ns, 219 pin / 205 net antenna,
 RAM đỉnh 13,5 GB. Script vẫn ghi RESULT: FAIL vì hai mục dưới.
 
-Antenna: còn 205 net, đa số vượt nhẹ (trung vị 1,4 lần giới hạn), không net nào trên chân SRAM. Router của
+Antenna (core_v11 chạy riêng; IP gemm_ip đã về 0 nhờ ECO tăng dần bằng tools/eco): còn 205 net, đa số vượt nhẹ (trung vị 1,4 lần giới hạn), không net nào trên chân SRAM. Router của
 OpenROAD bản này không tính antenna khi đi dây và không có chế độ ECO. Flow chèn diode ở global route, rồi
 sau detailed route chạy 3 vòng ECO (đặt diode cạnh cổng vi phạm và route lại). Mỗi lần route lại sinh vi phạm
 mới ở chỗ khác, nên con số dừng quanh 200.
@@ -118,14 +118,14 @@ Timing nhiều corner (setup ở ss/100°C/1,60V, hold ở ff/-40°C/1,95V, RC m
 
     python3 tools/sta_corners.py ~/OpenLane/designs/gemm_core/runs/core_v11
 
-core_v11: setup -7,61 ns (RC max) và -6,35 ns (RC min) ở corner chậm, tức khoảng 57 MHz; hold sạch với cả RC min
+core_v11: setup -7,61 ns (RC max) và -6,35 ns (RC min) ở corner chậm, tức khoảng 57 MHz (cũng chưa kiểm path qua macro); hold sạch với cả RC min
 và RC max. Lưu ý: STA này và con số 100 MHz ở tt chưa kiểm các path đi qua macro (SRAM, row). Kiểm đủ với lib của mọi macro
-thì fmax ở tt chỉ khoảng 53 MHz. IP gemm_ip vì vậy được signoff ở 50 MHz, và đó là con số "TT theo lib": SRAM chỉ có
+thì fmax ở tt chỉ khoảng 53 MHz. Với IP gemm_ip, setup ss của path chạm macro là −4,94 ns ở chu kỳ 20 ns (chỉ báo). IP gemm_ip vì vậy được signoff ở 50 MHz, và đó là con số "TT theo lib": SRAM chỉ có
 lib TT, timing của SRAM là ngoại suy (lib chỉ đặc tính hoá slew 1,25–40 ps), SRAM OpenRAM đo trên silicon khoảng 34–40 MHz,
 hold của path I/O chỉ báo, và điện dung RCX lớn hơn ước lượng sau global route khoảng 2 lần. Số liệu signoff của IP:
 docs/TIEN_DO_SIGNOFF.md.
 
-Công suất của core ở tt/25°C/1,80V, 100 MHz (IP gemm_ip ở 50 MHz: 1,38 W activity mặc định, xem docs/TIEN_DO_SIGNOFF.md):
+Công suất của core ở tt/25°C/1,80V, giả định 100 MHz, không đạt khi kiểm đủ path qua macro (IP gemm_ip ở 50 MHz: 1377,6 mW vectorless, xem docs/TIEN_DO_SIGNOFF.md):
 
     tools/power.sh ~/OpenLane/designs/gemm_core/runs/core_v11                  # activity mặc định của OpenSTA
     tools/power.sh ~/OpenLane/designs/gemm_core/runs/core_v11 --vcd 2300 3200  # activity từ mô phỏng
@@ -133,8 +133,8 @@ Công suất của core ở tt/25°C/1,80V, 100 MHz (IP gemm_ip ở 50 MHz: 1,38
 core_v11: 2,89 W với activity mặc định; 1,53 W với activity từ VCD (mô phỏng gate-level kích thước 64x64x64,
 row gate-level, chu kỳ 2300-3200 là pha tính của job thứ hai). Trong 1,53 W: SRAM 0,45 W (80 macro), row 0,78 W,
 phần còn lại của core 0,30 W. Thư viện OpenRAM cho cùng năng lượng mỗi cạnh clock dù SRAM có được chọn hay không, nên phần
-SRAM là cận trên. Mô phỏng không có trễ cổng nên không tính glitch. Đỉnh 204,8 GOPS (2 x 32 x 32 x 100 MHz),
-tức 134 GOPS/W và 2,83 GOPS/mm². Bản --vcd mất khoảng 15 phút (core_v11: 13m27s, cửa sổ 900 chu kỳ), cần khoảng 8 GB RAM (mô phỏng đỉnh 7,0 GB) và 0,7 GB ổ.
+SRAM là cận trên. Mô phỏng không có trễ cổng nên không tính glitch. Với giả định 100 MHz, không đạt khi kiểm đủ path qua macro: đỉnh 204,8 GOPS
+(2 x 32 x 32 x 100 MHz), tức 134 GOPS/W và 2,83 GOPS/mm². Hiệu suất của IP ở 50 MHz sẽ điền khi có công suất theo VCD. Bản --vcd mất khoảng 15 phút (core_v11: 13m27s, cửa sổ 900 chu kỳ), cần khoảng 8 GB RAM (mô phỏng đỉnh 7,0 GB) và 0,7 GB ổ.
 
 Mô phỏng gate-level: `core-gls` in PASS và số sự kiện trùng chu kỳ cho từng kích thước. core_v11 với row
 gate-level: PASS cả 3 kích thước (64x64x64, 8x32x544, 16x992x32), trùng chu kỳ 258, 274 và 34 sự kiện với RTL
@@ -344,7 +344,7 @@ core_v11 so với shell của bốn biến thể (openlane/logs/axi_overhead_202
 | Công suất VCD, chu kỳ 2300..3200 (mW) | 3,13 (0,20 %) | 16,6 (1,09 %) | 11,9 (0,78 %) | ≤ 12,1 (≤ 0,79 %) |
 | Chu kỳ trễ so với KV260 | 0 | 1-3 | 1-3 | 1-4 |
 
-Core để so: 7 684 240 um² std-cell, 105 821 flop, die 72,3 mm², 2,89 W vectorless, 1,529 W VCD ở 2300..3200. Cả
+Core để so: 7 684 240 um² std-cell, 105 821 flop, die 72,3 mm², 2,89 W vectorless, 1,529 W VCD ở 2300..3200 (cả hai ở giả định 100 MHz). Cả
 bốn biến thể giữ một beat mỗi chu kỳ trên mỗi luồng. DRC và LVS sạch; antenna còn 6 / 56 / 38 / 12 chân (run đo
 đạc). Chức năng: axi-sim ALL PASS (thin trùng chu kỳ với RTL KV260 ở cả 258 sự kiện kết quả), axi-gls lean_cg bọc
 netlist cuối của core_v11 PASS.

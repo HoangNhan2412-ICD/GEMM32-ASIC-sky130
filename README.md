@@ -32,8 +32,8 @@ IP đã signoff ở **50 MHz (chu kỳ 20 ns), TT theo lib**, trên layout ECO c
 | Setup / hold nội bộ | tt: setup +1,43 ns, hold +0,32 ns; hold ff +0,13 ns; hold ss +0,23 ns |
 | DRV | 0 net cell chuẩn vượt giới hạn lib ở tt và ss |
 | Mô phỏng gate-level | PASS cả 3 kích thước, trùng từng chu kỳ với RTL cùng cấu hình |
-| Công suất | 1377,6 mW (1,38 W) ở 50 MHz, tt, activity mặc định của OpenSTA (vectorless) |
-| Hiệu suất | đỉnh 102,4 GOPS (2 x 32 x 32 x 50 MHz); GOPS/W sẽ điền khi có công suất theo VCD |
+| Công suất | 800,3 mW theo VCD (64x64x64, cửa sổ 400 chu kỳ lúc đang tính; 8x32x544: 744,9; 16x992x32: 772,7 mW), tt, SPEF RC nom, 50 MHz; tham khảo: 1377,6 mW vectorless (activity mặc định của OpenSTA) |
+| Hiệu suất | đỉnh 102,4 GOPS (2 x 32 x 32 x 50 MHz). Hiệu dụng theo GLS và công suất VCD: 64x64x64 15,9 GOPS, 19,9 GOPS/W, 100 pJ/MAC (8x32x544: 3,5 GOPS/W; 16x992x32: 6,8 GOPS/W). Đỉnh chia công suất đo: 128 GOPS/W, chỉ là cận trên. Chi tiết: docs/paper/SUMMARY.md |
 | Mô hình timing | `GEMM_top.tt.lib` cho người tích hợp (phần I/O) |
 
 Giới hạn:

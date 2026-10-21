@@ -20,3 +20,8 @@ Thứ tự chạy, mỗi lúc một job nặng:
 5. `ir_drop.tcl` (có thể đặt `VSRC`), `ir_row.tcl`, rồi `ir_map.py <dir> <vccd1.csv> <vssd1.csv> <tag>`. File VSRC mỗi dòng có dạng `x,y,size,voltage`, phải ngăn cách bằng dấu phẩy.
 6. `klayout_shots.py`, `or_shots.tcl`, `density_maps.py`, `block_maps.py`.
 7. `plots.py`. Cần matplotlib 3.9.2; image OpenLane không có, nên tạo venv riêng.
+8. Đợt 3:
+   - `perf_overlap.py`: ước tính chồng pha, dựa trên log của `perf_rtl.py`;
+   - `sta_ss140.sh`: STA ở ss_100C_1v40, gọi `sta_ss140.tcl` và `block_fmax.tcl`;
+   - `gls_errata.sh <M,K,N>...`: GLS trên netlist cuối, so từng dòng với log RTL của `sim/run_errata.sh`;
+   - `phases.py` nay tách thêm pha `tile_reload`.

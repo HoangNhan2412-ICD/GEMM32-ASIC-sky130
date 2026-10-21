@@ -10,7 +10,7 @@ TOP = "u_gemm_accelerator"; ROWRE = re.compile(r"g_pe_row\[(\d+)\]\.u_row$")
 OUTPINS = {"X", "Y", "Q", "Q_N", "HI", "LO"}
 
 # ---- VCD
-ids = collections.defaultdict(list)          # id -> [(scope, net)] per bit, MSB first for buses
+ids = collections.defaultdict(list)          # id -> list of names, each [(scope, net)] per bit, MSB first for buses
 scope = []; t0 = None; t = 0
 with open(vcd) as f:
     for line in f:
@@ -32,20 +32,21 @@ with open(vcd) as f:
                 bits = [(s, f"{name}[{b}]") for b in range(hi, lo + step, step)]
             else:
                 bits = [(s, name)] if w == 1 else [(s, f"{name}[{b}]") for b in range(w - 1, -1, -1)]
-            ids[vid] = bits; continue
+            # iverilog gives one VCD id to all names of one net (a core net and the row port it
+            # connects to): every alias must follow the value, not only the last one declared
+            ids[vid].append(bits); continue
         if line.startswith("$enddefinitions"): break
-    nbits = sum(len(v) for v in ids.values())
+    nbits = sum(len(b) for v in ids.values() for b in v)
     val = {}; last = {}; tog = collections.Counter(); high = collections.Counter()
-    def setbits(vid, v, now):
-        bits = ids.get(vid)
-        if bits is None: return
-        v = v.rjust(len(bits), v[0] if v[0] in "xz" else "0")
-        for i, k in enumerate(bits):
-            nv = v[i]; ov = val.get(k)
-            if ov == nv: continue
-            if ov == "1": high[k] += now - last[k]
-            if ov in ("0", "1") and nv in ("0", "1"): tog[k] += 1
-            val[k] = nv; last[k] = now
+    def setbits(vid, v0, now):
+        for bits in ids.get(vid, ()):
+            v = v0.rjust(len(bits), v0[0] if v0[0] in "xz" else "0")
+            for i, k in enumerate(bits):
+                nv = v[i]; ov = val.get(k)
+                if ov == nv: continue
+                if ov == "1": high[k] += now - last[k]
+                if ov in ("0", "1") and nv in ("0", "1"): tog[k] += 1
+                val[k] = nv; last[k] = now
     for line in f:
         c = line[0]
         if c == "#":

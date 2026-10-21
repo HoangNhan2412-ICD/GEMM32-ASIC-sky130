@@ -2,7 +2,7 @@
 # register paths (I/O paths depend on assumed I/O delays and are left out), with the
 # block's signoff SPEF (RC nom) and propagated clock. fmax = 1 / (T - slack).
 # env: FINAL (results/final of the run), DESIGN, LIBCORNER (tt | ss | ff)
-array set LIBC {tt tt_025C_1v80 ff ff_n40C_1v95 ss ss_100C_1v60}
+array set LIBC {tt tt_025C_1v80 ff ff_n40C_1v95 ss ss_100C_1v60 ss14 ss_100C_1v40}
 set lib $::env(PDK_ROOT)/sky130A/libs.ref
 read_liberty $lib/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__$LIBC($::env(LIBCORNER)).lib
 read_verilog $::env(FINAL)/verilog/gl/$::env(DESIGN).nl.v

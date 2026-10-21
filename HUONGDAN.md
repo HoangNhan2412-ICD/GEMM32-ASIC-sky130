@@ -130,7 +130,7 @@ Công suất của core ở tt/25°C/1,80V, giả định 100 MHz, không đạt
     tools/power.sh ~/OpenLane/designs/gemm_core/runs/core_v11                  # activity mặc định của OpenSTA
     tools/power.sh ~/OpenLane/designs/gemm_core/runs/core_v11 --vcd 2300 3200  # activity từ mô phỏng
 
-core_v11: 2,89 W với activity mặc định; 1,53 W với activity từ VCD (mô phỏng gate-level kích thước 64x64x64,
+core_v11: 2,89 W với activity mặc định; 1,53 W với activity từ VCD (đo lại bằng `tools/power/vcd2act.py` đã sửa lỗi alias: không đổi; mô phỏng gate-level kích thước 64x64x64,
 row gate-level, chu kỳ 2300-3200 là pha tính của job thứ hai). Trong 1,53 W: SRAM 0,45 W (80 macro), row 0,78 W,
 phần còn lại của core 0,30 W. Thư viện OpenRAM cho cùng năng lượng mỗi cạnh clock dù SRAM có được chọn hay không, nên phần
 SRAM là cận trên. Mô phỏng không có trễ cổng nên không tính glitch. Với giả định 100 MHz, không đạt khi kiểm đủ path qua macro: đỉnh 204,8 GOPS
@@ -245,6 +245,32 @@ slice đã nhận beat đó rồi mới dừng. Lỗi chỉ được ghi một l
 beat thì ISR xoá (W1C) xong bit vẫn ở 0, irq không bật lại liên tục. Cờ busy/done lấy theo handshake ở cổng của IP, để "done" nghĩa là beat kết
 quả cuối đã ra khỏi IP. TREADY của các slice ở mức thấp suốt lúc reset và một chu kỳ sau đó, vì reset bên trong
 nhả muộn hơn cổng hai chu kỳ (ResetSync).
+
+### ERRATA (IP v1)
+Hai lỗi của RTL, có cả trong netlist cuối của IP. RTL và layout của v1 giữ nguyên; **sẽ sửa ở v2**. Test có chủ đích: `sim/run_errata.sh` (RTL đúng cấu hình đã build: `asic-sram`, WRAP=lean, AXIS_CG=1; 11 ca, mọi ca đúng như mô tả dưới đây). GLS trên netlist cuối cho M = 1, M = 2 và job 511 từ feature (73×224×32) giống RTL từng dòng, kể cả ở ca lỗi M = 1 (`docs/paper/data/gls_errata.txt`).
+
+**E1. Mỗi bộ đệm chứa ít hơn độ sâu của nó 1 từ (511 / 1023 / 511 thay vì 512 / 1024 / 512).**
+- Nguyên nhân: bộ đếm số từ rộng log2(depth) bit, nên số từ đúng bằng độ sâu quay về 0.
+  - `rtl_asic/In_buffer.v:70-71`: `r_weight_words_expected` 10 bit, `r_feature_words_expected` 9 bit.
+  - `In_buffer.v:106` và `:116-117`: tích `row_count × k_block_count` và `n_block_count × k_block_count × 32` bị cắt.
+  - `In_buffer.v:88-89`: ready = `write_count < expected`.
+  - `In_buffer.v:91`: bắt đầu đọc cần `expected != 0`.
+  - `rtl_asic/Out_buffer.v:52` và `:285`: `r_result_words_expected` 9 bit = `row_count × n_block_count` bị cắt.
+- Điều kiện xảy ra:
+  - feature M·Kb = 512: job treo; chỉ 1 beat được nhận, chính là beat do slice AXI giữ;
+  - weight 32·Kb·Nb = 1024: job treo;
+  - kết quả M·Nb = 512: sai giá trị và thừa beat (580 thay vì 512).
+  - Các kích thước lớn hơn nằm ngoài giới hạn của host bên dưới.
+
+**E2. M = 1 (row_count = 1) cho kết quả sai và thừa beat kết quả.** Kể cả job một tile 1×32×32 cũng sai. Nguyên nhân, xác định bằng vết mô phỏng RTL so M = 1 với M = 2:
+- `rtl_asic/Buffer_feeder.v:109`: `input_feature_last = (feature_cnt == row_count − 1)`. Với row_count = 1, cờ này bằng 1 ở mọi chu kỳ `feature_cnt = 0` mà không kèm valid. `Buffer_feeder.v:130` đưa nó ra `r_compute_input_last` suốt trạng thái SET_FEATURE.
+- `rtl_asic/Gemm_compute_core.v:147` đẩy `last` vào pipeline mà không AND với valid, nên ra nhiều xung `o_partial_last`. Khi đó `Buffer_feeder.v:103` (`total_last`) lặp lại, OutputBuffer kết thúc job nhiều lần, và `In_buffer.v:91-95` (`| i_compute_partial_last`) khởi động đọc lại.
+- Thêm vào đó, `In_buffer.v:232-237`: `r_feature_read_row` được đặt bằng 1 rồi tăng mãi, vì phép so sánh với `row_count − 1 = 0` không bao giờ đúng. Địa chỉ feature của các K-block sau vì vậy sai.
+
+**Ràng buộc cho host (driver) với IP v1:**
+- **M ≥ 2:** với GEMV (M = 1), đệm thêm một hàng 0 và bỏ hàng kết quả thừa, hoặc chạy trên CPU.
+- **Mỗi job:** M·Kb ≤ 511, 32·Kb·Nb ≤ 1023 (tức Kb·Nb ≤ 31), M·Nb ≤ 511, M ≤ 511, Kb ≤ 31, Nb ≤ 31, với Kb = ⌈K/32⌉, Nb = ⌈N/32⌉.
+- **Ma trận lớn hơn:** chia theo M và N. Không chia theo K, vì kết quả là INT8 sau phép dịch.
 
 ### Chạy
 

@@ -20,7 +20,8 @@ usage: perf_rtl.py <paper dir>"""
 import sys, os, re, csv, math, subprocess, shutil
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from phases import split, PH
-P = sys.argv[1]; W = f"{P}/work/rtl"; os.makedirs(W, exist_ok=True)
+P = sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+W = f"{P}/work/rtl"; os.makedirs(W, exist_ok=True)
 F = 50.0; PEAK = 2 * 1024 * F / 1e3
 REPO = "${KV260}"
 SHAPES = [  # name, M, K, N, note
@@ -38,11 +39,12 @@ def chunks(total, most):
     k = math.ceil(total / most); q, r = divmod(total, k)
     return [q + 1] * r + [q] * (k - r)
 
-def plan(M, K, N):
+def plan(M, K, N, lim=(511, 1023, 511)):
+    """sub-jobs within the word limits (feature, weight, result) of one job"""
     Kb = math.ceil(K / 32); assert Kb <= 31, "K > 992 needs a K split"
-    Nb = math.ceil(N / 32); nbmax = min(31, 1023 // (32 * Kb))
+    Nb = math.ceil(N / 32); nbmax = min(31, lim[1] // (32 * Kb)); assert nbmax >= 1, "K too large for the weight limit"
     nbs = chunks(Nb, nbmax); ns = [32 * b for b in nbs]; ns[-1] -= 32 * Nb - N
-    ms = chunks(M, min(511 // Kb, 511 // max(nbs)))
+    ms = chunks(M, min(lim[0] // Kb, lim[2] // max(nbs)))
     jobs = {}
     for m in ms:
         for n in ns:
@@ -67,31 +69,32 @@ def sim(shape, mode):
     _, _, _, info = split(log, 2)
     return ok, info
 
-subrows, rows = [], []
-for name, M, K, N, note in SHAPES:
-    jobs = plan(max(M, 2), K, N)          # M = 1 is padded to 2 rows (see SHAPES)
-    for mode in ("tb", "fullrate"):
-        tot = {p: 0 for p in PH}; cyc = 0; ok_all = True; byin = byout = 0
-        for (m, k, n), cnt in jobs.items():
-            ok, i = sim((m, k, n), mode); ok_all &= ok
-            Kb, Nb = math.ceil(k / 32), math.ceil(n / 32)
-            subrows.append(dict(shape=name, mode=mode, sub_job=f"{m}x{k}x{n}", count=cnt, sim_pass=ok, cycles=i["cycles"],
-                                **{f"{p}_cycles": i[f"{p}_cycles"] for p in PH}, weight_tiles=i["weight_tiles"],
-                                feature_beats=i["feature_beats"], weight_beats=i["weight_beats"], result_beats=i["result_beats"],
-                                pe_util_pct=round(100 * m * k * n / (1024 * i["cycles"]), 2)))
-            print("PERFRTL", subrows[-1])
-            cyc += cnt * i["cycles"]
-            for p in PH: tot[p] += cnt * i[f"{p}_cycles"]
-            byin += cnt * 32 * (i["feature_beats"] + i["weight_beats"]); byout += cnt * 32 * i["result_beats"]
-        mac = M * K * N; t_us = cyc / F
-        rows.append(dict(shape=name, M=M, K=K, N=N, mode=mode, note=note, sub_jobs=sum(jobs.values()),
-                         sub_job_shapes=" + ".join(f"{c} x {a}x{b}x{d}" for (a, b, d), c in jobs.items()), sim_pass=ok_all,
-                         cycles=cyc, time_us=round(t_us, 2), macs=mac, gops=round(2 * mac / (t_us * 1e3), 3),
-                         pe_util_pct=round(100 * mac / (1024 * cyc), 2), peak_gops=PEAK,
-                         **{f"{p}_pct": round(100 * tot[p] / cyc, 1) for p in PH},
-                         bytes_in=byin, bytes_out=byout, ops_per_byte=round(2 * mac / (byin + byout), 2),
-                         in_bw_used_gbs=round(byin / (t_us * 1e3), 3)))
-        print("PERFRTL", rows[-1])
-for fn, rr in (("perf_rtl_subjobs.csv", subrows), ("perf_rtl_shapes.csv", rows)):
-    with open(f"{P}/data/{fn}", "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(rr[0])); w.writeheader(); w.writerows(rr)
+if __name__ == "__main__":
+    subrows, rows = [], []
+    for name, M, K, N, note in SHAPES:
+        jobs = plan(max(M, 2), K, N)          # M = 1 is padded to 2 rows (see SHAPES)
+        for mode in ("tb", "fullrate"):
+            tot = {p: 0 for p in PH}; cyc = 0; ok_all = True; byin = byout = 0
+            for (m, k, n), cnt in jobs.items():
+                ok, i = sim((m, k, n), mode); ok_all &= ok
+                Kb, Nb = math.ceil(k / 32), math.ceil(n / 32)
+                subrows.append(dict(shape=name, mode=mode, sub_job=f"{m}x{k}x{n}", count=cnt, sim_pass=ok, cycles=i["cycles"],
+                                    **{f"{p}_cycles": i[f"{p}_cycles"] for p in PH}, weight_tiles=i["weight_tiles"],
+                                    feature_beats=i["feature_beats"], weight_beats=i["weight_beats"], result_beats=i["result_beats"],
+                                    pe_util_pct=round(100 * m * k * n / (1024 * i["cycles"]), 2)))
+                print("PERFRTL", subrows[-1])
+                cyc += cnt * i["cycles"]
+                for p in PH: tot[p] += cnt * i[f"{p}_cycles"]
+                byin += cnt * 32 * (i["feature_beats"] + i["weight_beats"]); byout += cnt * 32 * i["result_beats"]
+            mac = M * K * N; t_us = cyc / F
+            rows.append(dict(shape=name, M=M, K=K, N=N, mode=mode, note=note, sub_jobs=sum(jobs.values()),
+                             sub_job_shapes=" + ".join(f"{c} x {a}x{b}x{d}" for (a, b, d), c in jobs.items()), sim_pass=ok_all,
+                             cycles=cyc, time_us=round(t_us, 2), macs=mac, gops=round(2 * mac / (t_us * 1e3), 3),
+                             pe_util_pct=round(100 * mac / (1024 * cyc), 2), peak_gops=PEAK,
+                             **{f"{p}_pct": round(100 * tot[p] / cyc, 1) for p in PH},
+                             bytes_in=byin, bytes_out=byout, ops_per_byte=round(2 * mac / (byin + byout), 2),
+                             in_bw_used_gbs=round(byin / (t_us * 1e3), 3)))
+            print("PERFRTL", rows[-1])
+    for fn, rr in (("perf_rtl_subjobs.csv", subrows), ("perf_rtl_shapes.csv", rows)):
+        with open(f"{P}/data/{fn}", "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(rr[0])); w.writeheader(); w.writerows(rr)

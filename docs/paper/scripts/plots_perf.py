@@ -32,7 +32,7 @@ plt.close(fig)
 # PE utilisation and phase split per shape
 names = [r["shape"] for r in rows if r["mode"] == "tb"]
 ut = {m: [float(next(r for r in rows if r["shape"] == n and r["mode"] == m)["pe_util_pct"]) for n in names] for m in mk}
-PH = ["config", "input_load", "weight_tile", "compute", "output_drain"]
+PH = ["config", "input_load", "weight_tile", "compute", "tile_reload", "output_drain"]
 fig, (a1, a2) = plt.subplots(2, 1, figsize=(8, 6.4), sharex=True)
 i = np.arange(len(names))
 a1.bar(i - 0.2, ut["tb"], 0.4, label="testbench as given"); a1.bar(i + 0.2, ut["fullrate"], 0.4, label="full-rate streams")
@@ -42,7 +42,7 @@ bot = np.zeros(len(names))
 for p in PH:
     v = np.array([float(next(r for r in rows if r["shape"] == n and r["mode"] == "fullrate")[f"{p}_pct"]) for n in names])
     a2.bar(i, v, 0.6, bottom=bot, label=p); bot += v
-a2.set_ylabel("share of cycles (%), full-rate"); a2.legend(fontsize=7, ncol=5, loc="upper center", bbox_to_anchor=(0.5, 1.15))
+a2.set_ylabel("share of cycles (%), full-rate"); a2.legend(fontsize=7, ncol=6, loc="upper center", bbox_to_anchor=(0.5, 1.15))
 a2.set_xticks(i); a2.set_xticklabels([f"{n}\n{r['M']}x{r['K']}x{r['N']}" for n, r in zip(names, [r for r in rows if r["mode"] == "tb"])], rotation=45, ha="right", fontsize=6.5)
 fig.tight_layout()
 for ext in ("png", "pdf"): fig.savefig(f"{P}/figures/pe_utilisation.{ext}", dpi=200)

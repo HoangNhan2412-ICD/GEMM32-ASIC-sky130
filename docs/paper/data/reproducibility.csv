@@ -26,3 +26,9 @@ IR drop inside one row (ir_row.tcl),OpenROAD 41a51eaf PSM,OL1 image,~2 min,<2 GB
 "IR drop IP, two source models (ir_drop.tcl, A and B)",OpenROAD 41a51eaf PSM,OL1 image,~17 + 15 min,<10 GB,"paper/work/ir2/ir_A.log, ir_B.log"
 PE sequential equivalence (pe_equiv2.ys),Yosys 0.62 (LibreLane image) and Yosys 0.30+48 (OL1),both images,<1 min each,<1 GB,"paper/data/pe_equiv2_yosys062.log, pe_equiv2_yosys030.log"
 "cell maps (block_maps.py), physical cost (phys_cost.py)",Python 3.12 + matplotlib 3.9.2,host,~20 s each,<3 GB,paper/work/block_maps.log
+"core_v11 VCD power re-measured with the fixed vcd2act.py (tools/power.sh, POWER_OUT)",Icarus 13.0 + OpenSTA 2.4.0,host + OL1 image,13 min 46 s,7.0 GB (sim),paper/data/core_v11_vcd_recheck/
+"errata directed tests, 11 RTL cases (sim/run_errata.sh)",Icarus 13.0,host,14 min,<1 GB,paper/data/errata_rtl_tests.txt
+"errata GLS, 3 small cases on the final netlist (gls_errata.sh)",Icarus 13.0,host,see gls_errata.txt,~7 GB,paper/data/gls_errata.txt
+"clock-only power, 64x64x64 job (power_phases.tcl, clock-only activity)",OpenSTA 2.4.0,OL1 image,~6 min,~7 GB,paper/work/clockfloor/sta.log
+STA ss_100C_1v40 bound (sta_ss140.sh: top RC nom/max + 3 blocks),OpenROAD 41a51eaf / OpenSTA 2.4.0,OL1 image,~4 min,3.3 GB,paper/data/sta_ss140_summary.txt
+"overlap estimate (perf_overlap.py, RTL runs of new sub-job shapes)",Icarus 13.0 + Python,host,~1 min,<1 GB,paper/work/perf_overlap.log

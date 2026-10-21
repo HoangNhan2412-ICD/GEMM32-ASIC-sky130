@@ -11,7 +11,8 @@
 # The complete IP (a gemm_ip run): DESIGN=GEMM_top SHELL_RUN=<gemm_ip_shell run>
 #   tools/power.sh <gemm_ip run>  (vectorless only; the AXI macro as its gate netlist + SPEF)
 # SRAM: OpenRAM .lib, same energy on every clock edge whether selected or not.
-# Output: <run>/reports/power/{vectorless,vcd_C0_C1}.{design,inst,groups}.*
+# Output: <run>/reports/power/{vectorless,vcd_C0_C1}.{design,inst,groups}.* (POWER_OUT=dir to write
+# elsewhere, e.g. to leave a finished run untouched; POWER_BUILD=dir for the simulation)
 # Needs ~8 GB RAM (STA) and, with --vcd, ~7 GB for the simulation, ~0.7 GB disk per 1000 cycles.
 # ---------------------------------------------------------------------------
 set -euo pipefail
@@ -40,7 +41,7 @@ DESIGN=${DESIGN:-GemmAccelerator}
 SHELL_RUN=${SHELL_RUN:-}
 [ -n "$SHELL_RUN" ] && SHELL_RUN=$(cd "$SHELL_RUN" && pwd)
 ROW_RUN=$(cd "${ROW_RUN:-$OL/designs/gemm_row/runs/row_v1}" && pwd)
-OUT=$RUN/reports/power; mkdir -p "$OUT"
+OUT=${POWER_OUT:-$RUN/reports/power}; mkdir -p "$OUT"
 echo "core run: $RUN ($DESIGN)"; echo "row run : $ROW_RUN"
 [ -n "$SHELL_RUN" ] && echo "AXI macro run: $SHELL_RUN"
 
@@ -61,7 +62,7 @@ if [ -z "$C0" ]; then
 fi
 [ "$DESIGN" = GemmAccelerator ] || { echo "--vcd is written for the core (GemmAccelerator) only"; exit 2; }
 name=vcd_${C0}_$C1
-B=$KIT/sim/build_power; mkdir -p "$B"
+B=${POWER_BUILD:-$KIT/sim/build_power}; mkdir -p "$B"
 python3 "$KIT/tools/power/vcd_window.py" "$C0" "$C1" "$B/$name.vcd" "$B/vcd_window.v"
 echo "gate-level sim (rows: gate netlist), dumping cycles $C0..$C1"
 BUILD=$B ROW=gl EXTRA_V=$B/vcd_window.v OL=$OL "$KIT/sim/run_gls.sh" "$RUN" "$REPO" > "$B/run_gls.log" 2>&1 || true

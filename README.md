@@ -19,7 +19,7 @@ macro (SRAM, row). Khi kiểm đủ, fmax ở tt chỉ khoảng 53 MHz, nên m�
 | Setup / hold | ở chu kỳ 10 ns, chưa gồm path qua macro; path nội bộ ở tt: setup +1,21 ns, hold +0,27 ns; hold sạch ở ff với cả RC min và RC max |
 | Antenna | core_v11 chạy riêng còn 219 pin trên 205 net, vượt nhẹ (trung vị 1,4 lần giới hạn), không chân SRAM nào |
 | Mô phỏng gate-level | netlist core cùng netlist gate-level của 32 row: PASS cả 3 kích thước ma trận (64x64x64, 8x32x544, 16x992x32), trùng từng chu kỳ với RTL FPGA |
-| Công suất | tt/25°C/1,80V, giả định 100 MHz, không đạt khi kiểm đủ path qua macro: 1,53 W với activity từ VCD (mô phỏng gate-level cả core lẫn row, pha tính của ma trận 64x64x64); 2,89 W với activity mặc định của OpenSTA |
+| Công suất | tt/25°C/1,80V, giả định 100 MHz, không đạt khi kiểm đủ path qua macro: 1,53 W với activity từ VCD (mô phỏng gate-level cả core lẫn row, pha tính của ma trận 64x64x64); đo lại bằng bộ đọc VCD đã sửa lỗi alias (đợt 3): không đổi, 1529,70 mW; 2,89 W với activity mặc định của OpenSTA |
 | Hiệu suất | giả định 100 MHz, không đạt khi kiểm đủ path qua macro: đỉnh 204,8 GOPS (2 x 32 x 32 x 100 MHz), 134 GOPS/W (theo 1,53 W), 2,83 GOPS/mm² |
 
 ## IP gemm_ip (core + vỏ AXI), signoff ở 50 MHz
@@ -81,6 +81,32 @@ GDS nằm ở ~/OpenLane/designs/gemm_core/runs/<tag>/results/final/gds/.
 - Tắt diode heuristic (nguồn nghẽn chính); LEF của SRAM được bổ sung dữ liệu antenna để công cụ thấy chân SRAM.
 - Magic DRC đọc cell chuẩn bằng layout đầy đủ, macro bằng abstract; cờ quanh macro được kiểm lại bằng tools/magic_macro_check.sh.
 - repair_timing chạy với -skip_pin_swap, và tầng row so netlist cuối với RTL (sim/row_equiv.sh): LVS không bắt được lỗi đổi chân.
+
+## ERRATA (IP v1)
+Hai lỗi của RTL, có cả trong netlist cuối của IP. RTL và layout của v1 giữ nguyên; **sẽ sửa ở v2**. Test có chủ đích: `sim/run_errata.sh` (RTL đúng cấu hình đã build: `asic-sram`, WRAP=lean, AXIS_CG=1; 11 ca, mọi ca đúng như mô tả dưới đây). GLS trên netlist cuối cho M = 1, M = 2 và job 511 từ feature (73×224×32) giống RTL từng dòng, kể cả ở ca lỗi M = 1 (`docs/paper/data/gls_errata.txt`).
+
+**E1. Mỗi bộ đệm chứa ít hơn độ sâu của nó 1 từ (511 / 1023 / 511 thay vì 512 / 1024 / 512).**
+- Nguyên nhân: bộ đếm số từ rộng log2(depth) bit, nên số từ đúng bằng độ sâu quay về 0.
+  - `rtl_asic/In_buffer.v:70-71`: `r_weight_words_expected` 10 bit, `r_feature_words_expected` 9 bit.
+  - `In_buffer.v:106` và `:116-117`: tích `row_count × k_block_count` và `n_block_count × k_block_count × 32` bị cắt.
+  - `In_buffer.v:88-89`: ready = `write_count < expected`.
+  - `In_buffer.v:91`: bắt đầu đọc cần `expected != 0`.
+  - `rtl_asic/Out_buffer.v:52` và `:285`: `r_result_words_expected` 9 bit = `row_count × n_block_count` bị cắt.
+- Điều kiện xảy ra:
+  - feature M·Kb = 512: job treo; chỉ 1 beat được nhận, chính là beat do slice AXI giữ;
+  - weight 32·Kb·Nb = 1024: job treo;
+  - kết quả M·Nb = 512: sai giá trị và thừa beat (580 thay vì 512).
+  - Các kích thước lớn hơn nằm ngoài giới hạn của host bên dưới.
+
+**E2. M = 1 (row_count = 1) cho kết quả sai và thừa beat kết quả.** Kể cả job một tile 1×32×32 cũng sai. Nguyên nhân, xác định bằng vết mô phỏng RTL so M = 1 với M = 2:
+- `rtl_asic/Buffer_feeder.v:109`: `input_feature_last = (feature_cnt == row_count − 1)`. Với row_count = 1, cờ này bằng 1 ở mọi chu kỳ `feature_cnt = 0` mà không kèm valid. `Buffer_feeder.v:130` đưa nó ra `r_compute_input_last` suốt trạng thái SET_FEATURE.
+- `rtl_asic/Gemm_compute_core.v:147` đẩy `last` vào pipeline mà không AND với valid, nên ra nhiều xung `o_partial_last`. Khi đó `Buffer_feeder.v:103` (`total_last`) lặp lại, OutputBuffer kết thúc job nhiều lần, và `In_buffer.v:91-95` (`| i_compute_partial_last`) khởi động đọc lại.
+- Thêm vào đó, `In_buffer.v:232-237`: `r_feature_read_row` được đặt bằng 1 rồi tăng mãi, vì phép so sánh với `row_count − 1 = 0` không bao giờ đúng. Địa chỉ feature của các K-block sau vì vậy sai.
+
+**Ràng buộc cho host (driver) với IP v1:**
+- **M ≥ 2:** với GEMV (M = 1), đệm thêm một hàng 0 và bỏ hàng kết quả thừa, hoặc chạy trên CPU.
+- **Mỗi job:** M·Kb ≤ 511, 32·Kb·Nb ≤ 1023 (tức Kb·Nb ≤ 31), M·Nb ≤ 511, M ≤ 511, Kb ≤ 31, Nb ≤ 31, với Kb = ⌈K/32⌉, Nb = ⌈N/32⌉.
+- **Ma trận lớn hơn:** chia theo M và N. Không chia theo K, vì kết quả là INT8 sau phép dịch.
 
 ## Hạn chế
 

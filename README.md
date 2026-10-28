@@ -1,5 +1,5 @@
 # GEMM 32x32 INT8 trên SKY130
-
+link Drive dự án: https://drive.google.com/drive/u/0/folders/1rQGXBQMxBw7CRs1iQ_FK7p_eN03Ah15e
 Bộ tăng tốc nhân ma trận INT8 32x32 kiểu weight-stationary. Bản gốc chạy trên FPGA KV260;
 repo này đưa nó ra layout trên SKY130 bằng OpenLane 1.0.2. Thiết kế được harden theo tầng:
 PE, row (32 PE), array, rồi core GemmAccelerator gồm 32 row macro và 80 SRAM OpenRAM.
